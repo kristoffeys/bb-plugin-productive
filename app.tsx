@@ -86,7 +86,6 @@ import {
   PRESETS_CHANGED,
   connectionInteractionPayloadSchema,
   connectionInteractionResponseSchema,
-  formatWorkItemHandoffPrompt,
   productiveRpcContract,
   type ConnectionMutation,
   type ConnectionView,
@@ -2774,7 +2773,6 @@ function TrackerDetail({
     );
   }
 
-  const prompt = formatWorkItemHandoffPrompt(item);
 
   return (
     <div className="@container flex min-h-full flex-col">
@@ -2829,13 +2827,6 @@ function TrackerDetail({
                   <Icon name="ExternalLink" className="size-3.5" />
                   Open
                 </a>
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => navigate.toCompose({ initialPrompt: prompt, focusPrompt: true })}
-              >
-                <Icon name="AiContentGenerator01" className="size-3.5" />
-                Send to agent
               </Button>
             </div>
           </div>
