@@ -373,7 +373,7 @@ function useStartThread() {
         });
         navigate.toThread(result.threadId);
       } catch (error) {
-        toast.error(`Could not start a thread for ${item.key}`, {
+        toast.error(`Could not start an agent for ${item.key}`, {
           description: describeError(error)
         });
       } finally {
@@ -1169,7 +1169,7 @@ function WorkItemAssigneeMenu({
   );
 }
 
-/** A single "Start thread" row, shared by the row and card overflow menus. */
+/** A single "Start agent" row, shared by the row and card overflow menus. */
 function StartThreadMenuItem({
   item,
   canStart,
@@ -1187,12 +1187,12 @@ function StartThreadMenuItem({
         name={pending ? 'Loading' : 'MessageSquarePlus'}
         className={cn('size-3.5', pending && 'animate-spin')}
       />
-      {pending ? 'Starting thread…' : 'Start thread'}
+      {pending ? 'Starting agent…' : 'Start agent'}
     </DropdownMenuItem>
   );
 }
 
-/** Row/card overflow menu: "Start thread" plus its worktree variant. */
+/** Row/card overflow menu: "Start agent" plus its worktree variant. */
 function ItemOverflowMenu({
   item,
   canStartThread,
@@ -1233,7 +1233,7 @@ function ItemOverflowMenu({
             className={cn('size-3.5', startThreadPending && 'animate-spin')}
           />
           <span className="min-w-0 flex-1">
-            Start thread in a new worktree
+            Start agent in a new worktree
             <span className="block text-2xs text-muted-foreground">
               Gives the ticket its own checkout, so parallel tickets don't collide.
             </span>
@@ -2796,14 +2796,14 @@ function TrackerDetail({
                   name={startThread.pendingId ? 'Loading' : 'MessageSquarePlus'}
                   className={cn('size-3.5', startThread.pendingId && 'animate-spin')}
                 />
-                {startThread.pendingId ? 'Starting thread…' : 'Start thread'}
+                {startThread.pendingId ? 'Starting agent…' : 'Start agent'}
               </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     type="button"
                     size="sm"
-                    aria-label="Start thread in a new worktree"
+                    aria-label="Start agent in a new worktree"
                     className="h-7 w-7 shrink-0 rounded-l-none rounded-r-full border-l border-primary-foreground/20 px-0"
                     disabled={!canStartThread || startThread.pendingId !== null}
                     onClick={() => void startThread.start(item, 'worktree')}
@@ -2812,7 +2812,7 @@ function TrackerDetail({
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="max-w-56 text-xs">
-                  Start thread in a new worktree — gives this ticket its own checkout so
+                  Start agent in a new worktree — gives this ticket its own checkout so
                   parallel tickets don't collide.
                 </TooltipContent>
               </Tooltip>
