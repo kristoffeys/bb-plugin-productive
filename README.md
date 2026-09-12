@@ -9,6 +9,15 @@ Modelled on the Taskboard plugin, but single-provider: one Productive API token
 serves the whole organization, and each BB project is mapped to one Productive
 project.
 
+## Install
+
+```
+bb plugin install git:https://github.com/kristoffeys/bb-plugin-productive.git
+```
+
+Needs `npm` on PATH: BB clones the repo, installs production dependencies, and
+builds the server and app bundles.
+
 ## Setup
 
 1. Create a Productive API token: **Settings → API integrations** in Productive.
