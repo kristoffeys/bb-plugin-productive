@@ -2137,18 +2137,25 @@ function useProjectFilterPresets(projectId: string | null): {
   return { presets, error, refreshError, loading, reload, setAuthoritative };
 }
 
-function presetToFilterState(preset: FilterPreset): BoardFilterState {
+/** Shared by saved presets and the persisted "last used view". */
+function presetStateToFilterState(
+  state: FilterPreset['state']
+): BoardFilterState {
   return {
-    query: preset.state.query,
-    view: preset.state.view,
-    stateCategories: [...preset.state.stateCategories],
-    statuses: [...preset.state.statuses],
-    assignees: [...preset.state.assignees],
-    folders: [...preset.state.folders],
-    taskLists: [...preset.state.taskLists],
-    labels: [...preset.state.labels],
-    collapsedGroups: { ...preset.state.collapsedGroups }
+    query: state.query,
+    view: state.view,
+    stateCategories: [...state.stateCategories],
+    statuses: [...state.statuses],
+    assignees: [...state.assignees],
+    folders: [...state.folders],
+    taskLists: [...state.taskLists],
+    labels: [...state.labels],
+    collapsedGroups: { ...state.collapsedGroups }
   };
+}
+
+function presetToFilterState(preset: FilterPreset): BoardFilterState {
+  return presetStateToFilterState(preset.state);
 }
 
 function filterStateToPresetState(filters: BoardFilterState) {
@@ -2195,6 +2202,51 @@ function TrackerBoard({
   const [groupBy, setGroupBy] = useState<LaneGrouping>('workflowStatus');
   const startThread = useStartThread();
   const requestRevisionRef = useRef(0);
+  // Null until the persisted view for this project has been read. Nothing may
+  // be written back before then, or the defaults this component mounts with
+  // would clobber what the user left behind.
+  const restoredProjectRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    restoredProjectRef.current = null;
+    void rpc
+      .call('getBoardView', { projectId })
+      .then(result => {
+        if (!active) return;
+        if (result.view) {
+          setFilters(presetStateToFilterState(result.view.state));
+          setGroupBy(result.view.groupBy);
+        }
+        restoredProjectRef.current = projectId;
+      })
+      .catch(() => {
+        // A board that cannot read its saved view still has to open.
+        if (active) restoredProjectRef.current = projectId;
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId, rpc]);
+
+  useEffect(() => {
+    if (restoredProjectRef.current !== projectId) return;
+    // Debounced: filters change on every keystroke in the search box.
+    const timer = setTimeout(() => {
+      void rpc
+        .call('saveBoardView', {
+          projectId,
+          view: { state: filterStateToPresetState(filters), groupBy }
+        })
+        .catch((cause: unknown) => {
+          // Never block the board on a failed write, but do not swallow it
+          // silently either: a rejected payload here presents as "the board
+          // forgot my filters", with nothing to go on.
+          console.warn('productive: could not save the board view', cause);
+        });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [projectId, filters, groupBy, rpc]);
 
   const load = useCallback(async () => {
     const requestRevision = ++requestRevisionRef.current;
@@ -2228,7 +2280,10 @@ function TrackerBoard({
   }, [load, refreshGeneration, projectId]);
 
   useEffect(() => {
-    if (boardSettings) {
+    // The project's default view is a starting point, not an override: once a
+    // saved view has been restored it wins, otherwise reopening the board
+    // would always snap back to the configured default.
+    if (boardSettings && restoredProjectRef.current !== boardSettings.projectId) {
       setFilters(current => ({ ...current, view: boardSettings.defaultView }));
     }
     // Only apply the project's default view the first time settings load.
