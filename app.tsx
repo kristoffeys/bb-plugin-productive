@@ -151,6 +151,7 @@ const THREAD_PANEL_ACTION_ID = 'productive-panel';
 const RIGHT_PANEL_PINNED_STORAGE_KEY = 'bb-productive:right-panel-pinned';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'bb-productive:sidebar-collapsed';
 const LAST_PROJECT_STORAGE_KEY = 'bb-productive:last-project';
+const LAST_ROUTE_STORAGE_KEY = 'bb-productive:last-route';
 const CREATE_METADATA_NETWORK_ERROR =
   'Productive could not load task creation options. Check the connection and try again.';
 const PROJECT_SEARCH_DEBOUNCE_MS = 250;
@@ -233,6 +234,28 @@ function loadLastProjectId(): string | null {
 function storeLastProjectId(projectId: string): void {
   try {
     window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, projectId);
+  } catch {
+    // Persistence is best-effort in sandboxed browser contexts.
+  }
+}
+
+/**
+ * The panel's own route, so reopening the tab returns to the ticket that was
+ * open rather than resetting to the project's list. Kept in localStorage next
+ * to the other panel-chrome preferences; the board's filters live server-side
+ * because they are per project, while this is "where was I".
+ */
+function loadLastRoute(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_ROUTE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeLastRoute(subPath: string): void {
+  try {
+    window.localStorage.setItem(LAST_ROUTE_STORAGE_KEY, subPath);
   } catch {
     // Persistence is best-effort in sandboxed browser contexts.
   }
@@ -4372,6 +4395,13 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
       lastBrowseRouteRef.current = route;
       storeLastProjectId(route.projectId);
     }
+    // Remember browse and item routes, never 'root' (which is the thing we
+    // are trying to redirect away from) or 'manage' (reopening into a settings
+    // form is not where anyone left off).
+    if (route.kind === 'project' || route.kind === 'item') {
+      storeLastRoute(routeToSubPath(route));
+      if (route.kind === 'item') storeLastProjectId(route.projectId);
+    }
   }, [route]);
 
   const preferredProjectId = useMemo(() => {
@@ -4386,11 +4416,20 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
 
   useEffect(() => {
     if (route.kind !== 'root' || preferredProjectId === null) return;
+    // Restore where the user left off, but only if that project still exists
+    // and the app has not put us in a different project's context.
+    const restored = parseTrackerRoute(loadLastRoute() ?? '');
+    const restorable =
+      (restored.kind === 'item' || restored.kind === 'project') &&
+      (projects ?? []).some(project => project.id === restored.projectId) &&
+      (contextProjectId === null || contextProjectId === restored.projectId);
     navigate.toPluginPanel(PANEL_PATH, {
-      subPath: routeToSubPath({ kind: 'project', projectId: preferredProjectId }),
+      subPath: restorable
+        ? routeToSubPath(restored)
+        : routeToSubPath({ kind: 'project', projectId: preferredProjectId }),
       replace: true
     });
-  }, [navigate, preferredProjectId, route.kind]);
+  }, [contextProjectId, navigate, preferredProjectId, projects, route.kind]);
 
   const go = (nextRoute: TrackerRoute) =>
     navigate.toPluginPanel(PANEL_PATH, { subPath: routeToSubPath(nextRoute) });
