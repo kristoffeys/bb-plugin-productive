@@ -100,7 +100,7 @@ columns. The panel mirrors that:
 
 ## Working on a task
 
-`bb productive start <locator>`, or the **Start thread** button on a task,
+`bb productive start <locator>`, or the **Start agent** button on a task,
 opens a new BB thread in the project the board is mapped to, with the task's
 fields as context. Nothing is written back to Productive.
 
