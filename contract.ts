@@ -455,6 +455,23 @@ export const productiveRpcContract = defineRpcContract({
       .strict(),
     output: z.object({ item: workItemSchema }).strict()
   },
+  updateItemContent: {
+    input: z
+      .object({
+        projectId: bbProjectIdSchema,
+        locator: productiveIdSchema,
+        /** Omitted fields are left untouched. */
+        title: z.string().trim().min(1).max(500).optional(),
+        /** Markdown. An empty string clears the body. */
+        description: z.string().max(100_000).optional()
+      })
+      .strict()
+      .refine(
+        input => input.title !== undefined || input.description !== undefined,
+        { message: 'Nothing to update' }
+      ),
+    output: z.object({ item: workItemDetailSchema }).strict()
+  },
   updateItemTaskList: {
     input: z
       .object({

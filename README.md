@@ -69,6 +69,7 @@ bb productive transitions <locator>
 bb productive move <locator> --status <status-id>
 bb productive move-list <locator> --list <task-list-id>
 bb productive comment <locator> <text>
+bb productive edit <locator> [--title <text>] [--description <text>]
 bb productive create --title <text> [--description <text>] [--list <id>]
 bb productive refresh
 bb productive config [--productive-project <id>] [--folder <id>] [--list <id>]

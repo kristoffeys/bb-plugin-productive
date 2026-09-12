@@ -2660,6 +2660,10 @@ function TrackerDetail({
   const [canStartThread, setCanStartThread] = useState(false);
   const startThread = useStartThread();
   const requestRevisionRef = useRef(0);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [savingContent, setSavingContent] = useState(false);
 
   const load = useCallback(async () => {
     const requestRevision = ++requestRevisionRef.current;
@@ -2746,6 +2750,51 @@ function TrackerDetail({
     [item, route.locator, route.projectId, rpc]
   );
 
+  const startEditing = useCallback(() => {
+    if (!item) return;
+    setEditTitle(item.title);
+    setEditDescription(item.description);
+    setEditing(true);
+  }, [item]);
+
+  const cancelEditing = useCallback(() => {
+    setEditing(false);
+  }, []);
+
+  const saveContent = useCallback(async () => {
+    if (!item) return;
+    const trimmedTitle = editTitle.trim();
+    // A task must keep a title. Say so and stay in the editor rather than
+    // quietly dropping the change, which reads as "Save did nothing".
+    if (trimmedTitle === '') {
+      toast.error('A task needs a title', {
+        description: 'Enter a title, or cancel to keep the current one.'
+      });
+      return;
+    }
+    const titleChanged = trimmedTitle !== item.title;
+    const descriptionChanged = editDescription !== item.description;
+    if (!titleChanged && !descriptionChanged) {
+      setEditing(false);
+      return;
+    }
+    setSavingContent(true);
+    try {
+      const result = await rpc.call('updateItemContent', {
+        projectId: route.projectId,
+        locator: route.locator,
+        ...(titleChanged ? { title: trimmedTitle } : {}),
+        ...(descriptionChanged ? { description: editDescription } : {})
+      });
+      setItem(result.item);
+      setEditing(false);
+    } catch (nextError) {
+      toast.error(`Could not update ${item.key}`, { description: describeError(nextError) });
+    } finally {
+      setSavingContent(false);
+    }
+  }, [editDescription, editTitle, item, route.locator, route.projectId, rpc]);
+
   const addComment = useCallback(
     async (body: string) => {
       setPostingComment(true);
@@ -2805,6 +2854,19 @@ function TrackerDetail({
             <span className="font-medium tabular-nums">{item.key}</span>
             <WorkItemStatusMenu item={item} variant="detail" onMove={moveItemStatus} />
             <WorkItemAssigneeMenu item={item} onChange={changeAssignee} />
+            {!editing ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 rounded-full px-2.5 text-xs"
+                disabled={!canStartThread}
+                onClick={startEditing}
+              >
+                <Icon name="Edit" className="size-3.5" />
+                Edit
+              </Button>
+            ) : null}
             <div className="inline-flex items-center overflow-hidden rounded-full border border-transparent">
               <Button
                 type="button"
@@ -2843,7 +2905,18 @@ function TrackerDetail({
             <p className="mb-1 truncate text-xs text-muted-foreground">{folderBreadcrumb(item)}</p>
           ) : null}
           <div className="flex flex-col gap-4 @lg:flex-row @lg:items-start">
-            <h1 className="min-w-0 flex-1 text-2xl font-semibold leading-tight">{item.title}</h1>
+            {editing ? (
+              <Input
+                value={editTitle}
+                onChange={event => setEditTitle(event.target.value)}
+                maxLength={500}
+                disabled={savingContent}
+                className="min-w-0 flex-1 text-2xl font-semibold leading-tight"
+                aria-label="Title"
+              />
+            ) : (
+              <h1 className="min-w-0 flex-1 text-2xl font-semibold leading-tight">{item.title}</h1>
+            )}
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button variant="outline" size="sm" asChild>
                 <a href={item.url} target="_blank" rel="noreferrer">
@@ -2885,7 +2958,26 @@ function TrackerDetail({
 
           <section className="mt-7">
             <h2 className="mb-3 text-sm font-semibold">Description</h2>
-            {item.description.trim() ? (
+            {editing ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={editDescription}
+                  onChange={event => setEditDescription(event.target.value)}
+                  placeholder="Markdown supported"
+                  rows={10}
+                  maxLength={100_000}
+                  disabled={savingContent}
+                />
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" disabled={savingContent} onClick={cancelEditing}>
+                    Cancel
+                  </Button>
+                  <Button type="button" size="sm" disabled={savingContent} onClick={() => void saveContent()}>
+                    {savingContent ? 'Saving…' : 'Save'}
+                  </Button>
+                </div>
+              </div>
+            ) : item.description.trim() ? (
               <Markdown content={item.description} />
             ) : (
               <p className="text-sm text-muted-foreground">No description provided.</p>

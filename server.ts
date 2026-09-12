@@ -521,6 +521,11 @@ export default async function plugin(bb: BbPluginApi) {
       const { comments: _comments, ...item } = detail;
       return { item };
     },
+    updateItemContent: async ({ projectId, locator, title, description }) => {
+      const api = await requireApi();
+      await api.updateTask(locator, { title, description });
+      return { item: await refreshItem(projectId, locator) };
+    },
     updateItemTaskList: async ({ projectId, locator, taskListId }) => {
       const api = await requireApi();
       await api.updateTask(locator, { taskListId });
@@ -860,6 +865,7 @@ export default async function plugin(bb: BbPluginApi) {
     '  bb productive move <locator> --status <status-id> [--project <proj_id>] [--json]',
     '  bb productive move-list <locator> --list <task-list-id> [--project <proj_id>] [--json]',
     '  bb productive comment <locator> <text> [--project <proj_id>] [--json]',
+    '  bb productive edit <locator> [--title <text>] [--description <text>] [--project <proj_id>] [--json]',
     '  bb productive create --title <text> [--description <text>] [--list <task-list-id>]',
     '                       [--status <status-id>] [--assignee <person-id>] [--due <YYYY-MM-DD>]',
     '                       [--project <proj_id>] [--json]',
@@ -926,6 +932,12 @@ export default async function plugin(bb: BbPluginApi) {
         name: 'comment',
         summary: 'Add a comment to a task',
         usage: 'bb productive comment <locator> <text> [--json]'
+      },
+      {
+        name: 'edit',
+        summary: "Edit a task's title or description",
+        usage:
+          'bb productive edit <locator> [--title <text>] [--description <text>] [--json]'
       },
       {
         name: 'create',
@@ -1182,6 +1194,29 @@ export default async function plugin(bb: BbPluginApi) {
             return reply(
               { locator, added: true },
               `Commented on ${item.key}`
+            );
+          }
+
+          case 'edit': {
+            if (projectId === null) return needProject();
+            const locator = rest[0];
+            const title = flagValue(args, '--title');
+            const description = flagValue(args, '--description');
+            if (locator === undefined) return fail(usage);
+            if (title === null && description === null) {
+              return fail(
+                'Pass --title and/or --description with the new value.'
+              );
+            }
+            const api = await requireApi();
+            await api.updateTask(locator, {
+              ...(title === null ? {} : { title }),
+              ...(description === null ? {} : { description })
+            });
+            const item = await refreshItem(projectId, locator);
+            return reply(
+              item,
+              `Updated ${item.key}: ${item.title}`
             );
           }
 
