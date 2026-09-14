@@ -36,6 +36,7 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  useSettings,
   type PluginNavPanelProps,
   type PluginNewThreadPanelProps,
   type PluginPendingInteractionProps,
@@ -80,6 +81,7 @@ import {
   TooltipTrigger
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { isComposerTaskActionEnabled } from './composer-action-settings.js';
 import {
   CONNECTION_CHANGED,
   ITEMS_CHANGED,
@@ -3451,6 +3453,7 @@ function DirectCreateTaskAction({ projectId }: { projectId: string | null }) {
 }
 
 function ComposerCreateTaskAction() {
+  const { values: settings } = useSettings();
   const view = useComposerView();
   const composer = useComposer();
   const { projectId: contextProjectId } = useBbContext();
@@ -3464,6 +3467,11 @@ function ComposerCreateTaskAction() {
     : !hasPrompt
       ? 'Write a prompt to create a task'
       : 'Turn prompt into Productive task';
+
+  // Settings are loaded asynchronously. Treat an absent value as enabled so
+  // existing installations retain the action until the host provides an
+  // explicitly disabled persisted value.
+  if (!isComposerTaskActionEnabled(settings)) return null;
 
   return (
     <TooltipProvider delayDuration={300}>

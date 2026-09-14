@@ -45,6 +45,13 @@ the board works, but the "assigned to me" filter has nothing to resolve against.
 The token is stored in a `0600` file under the plugin's data directory, not in
 plugin settings, so changing it does not require a plugin reload.
 
+## Composer action
+
+The Productive plugin settings page includes **Show “Turn prompt into
+Productive task” in the chat composer**. It is on by default. Turn it off to
+remove the Productive ticket action from thread and new-thread chat composers;
+the Productive connection and each project's board mapping are unchanged.
+
 ## Mapping
 
 | Productive | This plugin |

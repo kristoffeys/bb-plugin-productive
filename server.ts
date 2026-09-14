@@ -54,6 +54,7 @@ import {
   type ProductiveAttachment,
   type ProductiveTask
 } from './productive/index.js';
+import { productiveSettings } from './composer-action-settings.js';
 
 const SYNC_INTERVAL_MS = 5 * 60_000;
 const PRODUCTIVE_APP_ORIGIN = 'https://app.productive.io';
@@ -69,8 +70,14 @@ const EMPTY_CONNECTION: ConnectionSettings = {
   personId: ''
 };
 
+export { productiveSettings } from './composer-action-settings.js';
+
 export default async function plugin(bb: BbPluginApi) {
   bb.log.info('loaded');
+
+  // Declarative settings are persisted by BB and are exposed to the plugin
+  // settings page and app runtime. No connection or board state is stored here.
+  bb.settings.define(productiveSettings);
 
   const store = createWorkItemStore(bb);
   const pluginDataDirectory = dirname(bb.storage.database().name);
