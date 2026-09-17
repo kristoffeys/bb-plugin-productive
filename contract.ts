@@ -100,7 +100,12 @@ export const secretMutationSchema = z.discriminatedUnion('operation', [
 export type SecretMutation = z.infer<typeof secretMutationSchema>;
 
 export const trackerProjectSchema = z
-  .object({ id: bbProjectIdSchema, name: z.string() })
+  .object({
+    id: bbProjectIdSchema,
+    name: z.string(),
+    kind: z.enum(['project', 'group']),
+    groupId: z.string().nullable()
+  })
   .strict();
 export type TrackerProject = z.infer<typeof trackerProjectSchema>;
 

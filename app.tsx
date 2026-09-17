@@ -118,6 +118,7 @@ import {
   type WorkStatusOption
 } from './contract.js';
 import { FILTER_PRESET_NAME_MAX_LENGTH } from './filter-presets.js';
+import { groupIdFromScope } from './group-scopes.js';
 import {
   applyMarkdownFormat,
   type MarkdownFormat
@@ -1236,6 +1237,7 @@ function ItemOverflowMenu({
   startThreadPending: boolean;
   onStartThread: (item: WorkItem, environment?: 'project-default' | 'worktree') => void;
 }) {
+  const isGroupBoard = groupIdFromScope(item.bbProjectId) !== null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -1256,21 +1258,23 @@ function ItemOverflowMenu({
           pending={startThreadPending}
           onStart={onStartThread}
         />
-        <DropdownMenuItem
-          disabled={!canStartThread || startThreadPending}
-          onSelect={() => onStartThread(item, 'worktree')}
-        >
-          <Icon
-            name={startThreadPending ? 'Loading' : 'GitBranch'}
-            className={cn('size-3.5', startThreadPending && 'animate-spin')}
-          />
-          <span className="min-w-0 flex-1">
-            Start agent in a new worktree
-            <span className="block text-2xs text-muted-foreground">
-              Gives the ticket its own checkout, so parallel tickets don't collide.
+        {!isGroupBoard ? (
+          <DropdownMenuItem
+            disabled={!canStartThread || startThreadPending}
+            onSelect={() => onStartThread(item, 'worktree')}
+          >
+            <Icon
+              name={startThreadPending ? 'Loading' : 'GitBranch'}
+              className={cn('size-3.5', startThreadPending && 'animate-spin')}
+            />
+            <span className="min-w-0 flex-1">
+              Start agent in a new worktree
+              <span className="block text-2xs text-muted-foreground">
+                Gives the ticket its own checkout, so parallel tickets don't collide.
+              </span>
             </span>
-          </span>
-        </DropdownMenuItem>
+          </DropdownMenuItem>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -3238,7 +3242,12 @@ function TrackerDetail({
               <Button
                 type="button"
                 size="sm"
-                className="h-7 gap-1.5 rounded-r-none rounded-l-full px-2.5 text-xs"
+                className={cn(
+                  'h-7 gap-1.5 px-2.5 text-xs',
+                  groupIdFromScope(item.bbProjectId) === null
+                    ? 'rounded-r-none rounded-l-full'
+                    : 'rounded-full'
+                )}
                 disabled={!canStartThread || startThread.pendingId !== null}
                 onClick={() => void startThread.start(item)}
               >
@@ -3248,24 +3257,26 @@ function TrackerDetail({
                 />
                 {startThread.pendingId ? 'Starting agent…' : 'Start agent'}
               </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    size="sm"
-                    aria-label="Start agent in a new worktree"
-                    className="h-7 w-7 shrink-0 rounded-l-none rounded-r-full border-l border-primary-foreground/20 px-0"
-                    disabled={!canStartThread || startThread.pendingId !== null}
-                    onClick={() => void startThread.start(item, 'worktree')}
-                  >
-                    <Icon name="GitBranch" className="size-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-56 text-xs">
-                  Start agent in a new worktree — gives this ticket its own checkout so
-                  parallel tickets don't collide.
-                </TooltipContent>
-              </Tooltip>
+              {groupIdFromScope(item.bbProjectId) === null ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="sm"
+                      aria-label="Start agent in a new worktree"
+                      className="h-7 w-7 shrink-0 rounded-l-none rounded-r-full border-l border-primary-foreground/20 px-0"
+                      disabled={!canStartThread || startThread.pendingId !== null}
+                      onClick={() => void startThread.start(item, 'worktree')}
+                    >
+                      <Icon name="GitBranch" className="size-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-56 text-xs">
+                    Start agent in a new worktree — gives this ticket its own checkout so
+                    parallel tickets don't collide.
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
             </div>
           </div>
           {folderBreadcrumb(item) ? (
@@ -4346,7 +4357,7 @@ function ProjectMappingForm({ projectId }: { projectId: string }) {
 
   return (
     <div className="tb-settings-card space-y-4 rounded-xl border p-5">
-      <h3 className="text-sm font-semibold">Project mapping</h3>
+      <h3 className="text-sm font-semibold">Board mapping</h3>
 
       <div className="grid gap-1.5">
         <span className="text-xs font-semibold">Productive project</span>
@@ -4683,23 +4694,23 @@ function ManageView({
         <header className="tb-manage-hero flex flex-col gap-3 rounded-lg border px-4 py-4 @lg:flex-row @lg:items-end @lg:justify-between @lg:px-5">
           <div className="space-y-1">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Project settings
+              Board settings
             </p>
             <h2 className="text-lg font-semibold">Productive setup</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              One Productive connection serves every bb project; map this bb project to a
-              Productive project below, then choose its filters and layout.
+              One Productive connection serves every BB project and Sidebar group. Map the
+              selected board to Productive, then choose its filters and layout.
             </p>
           </div>
           {projects && projects.length > 0 ? (
             <Select value={projectId ?? undefined} onValueChange={onProjectChange}>
-              <SelectTrigger aria-label="BB project" className="h-9 w-64 max-w-full">
-                <SelectValue placeholder="Choose a BB project" />
+              <SelectTrigger aria-label="Board scope" className="h-9 w-64 max-w-full">
+                <SelectValue placeholder="Choose a project or group" />
               </SelectTrigger>
               <SelectContent>
                 {projects.map(project => (
                   <SelectItem key={project.id} value={project.id}>
-                    {project.name}
+                    {project.kind === 'group' ? `Group · ${project.name}` : project.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -4714,7 +4725,7 @@ function ManageView({
         ) : projects.length === 0 || projectId === null ? (
           <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-card p-10 text-center">
             <Icon name="Folder" className="size-5 text-muted-foreground" />
-            <p className="text-sm font-medium">No BB projects found</p>
+            <p className="text-sm font-medium">No BB projects or Sidebar groups found</p>
           </div>
         ) : (
           <>
@@ -4768,6 +4779,8 @@ function TrackerSidebar({
   isLoading: boolean;
   onNavigate: (route: TrackerRoute) => void;
 }) {
+  const groups = projects?.filter(project => project.kind === 'group');
+  const bbProjects = projects?.filter(project => project.kind === 'project');
   const activeProjectId = route.kind === 'project' || route.kind === 'item' ? route.projectId : null;
   const managedProjectId =
     route.kind === 'project' || route.kind === 'item'
@@ -4781,6 +4794,27 @@ function TrackerSidebar({
       className="tb-sidebar flex h-full w-52 shrink-0 flex-col border-l"
     >
       <nav aria-label="Productive navigation" className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-3">
+        {!isLoading && groups && groups.length > 0 ? (
+          <>
+            <div className="px-2 pb-1.5 text-2xs font-semibold uppercase tracking-[0.14em] text-subtle-foreground">
+              Groups
+            </div>
+            <div className="mb-3 space-y-px">
+              {groups.map(group => (
+                <SidebarRow
+                  key={group.id}
+                  active={activeProjectId === group.id}
+                  onClick={() => onNavigate({ kind: 'project', projectId: group.id })}
+                >
+                  <Icon name="Layers" className="size-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate" title={group.name}>
+                    {group.name}
+                  </span>
+                </SidebarRow>
+              ))}
+            </div>
+          </>
+        ) : null}
         <div className="px-2 pb-1.5 text-2xs font-semibold uppercase tracking-[0.14em] text-subtle-foreground">
           Projects
         </div>
@@ -4793,9 +4827,9 @@ function TrackerSidebar({
               </div>
             ))}
           </div>
-        ) : projects && projects.length > 0 ? (
+        ) : bbProjects && bbProjects.length > 0 ? (
           <div className="space-y-px">
-            {projects.map(project => (
+            {bbProjects.map(project => (
               <SidebarRow
                 key={project.id}
                 active={activeProjectId === project.id}

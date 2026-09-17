@@ -57,9 +57,22 @@ import {
   type ProductiveTask
 } from './productive/index.js';
 import { productiveSettings } from './composer-action-settings.js';
+import { groupIdFromScope, groupScopeId } from './group-scopes.js';
 
 const SYNC_INTERVAL_MS = 5 * 60_000;
 const PRODUCTIVE_APP_ORIGIN = 'https://app.productive.io';
+const sidebarGroupsSchema = z.object({
+  groups: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      projectIds: z.array(z.string()),
+      coordinatorThreadIds: z.array(z.string())
+    })
+  ),
+  order: z.record(z.string(), z.array(z.unknown()))
+});
+const sidebarStartSchema = z.object({ threadId: z.string() });
 
 /** Non-secret half of the connection. The token lives in a secret file. */
 const connectionSettingsSchema = z
@@ -84,6 +97,42 @@ export default async function plugin(bb: BbPluginApi) {
   const store = createWorkItemStore(bb);
   const pluginDataDirectory = dirname(bb.storage.database().name);
   const tokenPath = join(pluginDataDirectory, 'secrets', 'api-token');
+
+  async function sidebarGroups() {
+    try {
+      const result = await bb.sdk.plugins.callRpc({
+        pluginId: 'sidebar',
+        method: 'project_groups_list',
+        input: null,
+        outputSchema: sidebarGroupsSchema
+      });
+      return result.groups;
+    } catch (error) {
+      bb.log.warn(`Sidebar groups unavailable: ${safeMessage(error)}`);
+      return [];
+    }
+  }
+
+  async function trackerTargets() {
+    const [projects, groups] = await Promise.all([
+      bb.sdk.projects.list({ includePersonal: true }),
+      sidebarGroups()
+    ]);
+    return [
+      ...projects.map(project => ({
+        id: project.id,
+        name: project.name,
+        kind: 'project' as const,
+        groupId: null
+      })),
+      ...groups.map(group => ({
+        id: groupScopeId(group.id),
+        name: group.name,
+        kind: 'group' as const,
+        groupId: group.id
+      }))
+    ];
+  }
 
   // -------------------------------------------------------------------------
   // Connection
@@ -424,6 +473,36 @@ export default async function plugin(bb: BbPluginApi) {
       : { type: 'project-default' };
   }
 
+  async function startThreadForScope(
+    projectId: string,
+    locator: string,
+    environment: 'project-default' | 'worktree'
+  ): Promise<{ threadId: string; title: string }> {
+    const detail = await refreshItem(projectId, locator);
+    const { comments: _comments, attachments: _attachments, ...item } = detail;
+    const title = threadTitleForItem(item);
+    const groupId = groupIdFromScope(projectId);
+    if (groupId !== null) {
+      const thread = await bb.sdk.plugins.callRpc({
+        pluginId: 'sidebar',
+        method: 'group_start_thread',
+        input: {
+          groupId,
+          prompt: formatWorkItemHandoffPrompt(detail)
+        },
+        outputSchema: sidebarStartSchema
+      });
+      return { threadId: thread.threadId, title };
+    }
+    const thread = await bb.sdk.threads.spawn({
+      projectId,
+      environment: threadEnvironment(environment),
+      title,
+      prompt: formatWorkItemHandoffPrompt(detail)
+    });
+    return { threadId: thread.id, title };
+  }
+
   /** Field-wise equality; the cache row is flat, so a shallow compare is enough. */
   function sameWorkItem(left: WorkItem, right: WorkItem): boolean {
     const keys = Object.keys(right) as (keyof WorkItem)[];
@@ -468,16 +547,14 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.rpc.register(productiveRpcContract, {
     listProjects: async () => {
-      const projects = await bb.sdk.projects.list({ includePersonal: true });
-      return {
-        projects: projects.map(project => ({
-          id: project.id,
-          name: project.name
-        }))
-      };
+      return { projects: await trackerTargets() };
     },
     threadProject: async ({ threadId }) => {
       const thread = await bb.sdk.threads.get({ threadId });
+      const group = (await sidebarGroups()).find(candidate =>
+        candidate.coordinatorThreadIds.includes(threadId)
+      );
+      if (group) return { projectId: groupScopeId(group.id) };
       return { projectId: thread.projectId };
     },
     getConnection: async () => ({ connection: await connectionView() }),
@@ -576,8 +653,9 @@ export default async function plugin(bb: BbPluginApi) {
       return { item: await refreshItem(projectId, locator) };
     },
     getCreateTaskContext: async ({ projectId }) => {
-      const project = (await bb.sdk.projects.list({ includePersonal: true }))
-        .find(candidate => candidate.id === projectId);
+      const project = (await trackerTargets()).find(
+        candidate => candidate.id === projectId
+      );
       const scope = await scopeView(projectId);
       const connection = await connectionView();
       return {
@@ -665,16 +743,7 @@ export default async function plugin(bb: BbPluginApi) {
     startThread: async ({ projectId, locator, environment }) => {
       // The task is re-read rather than taken from cache so the agent starts
       // from what Productive says right now, not a stale board row.
-      const detail = await refreshItem(projectId, locator);
-      const { comments: _comments, attachments: _attachments, ...item } = detail;
-      const title = threadTitleForItem(item);
-      const thread = await bb.sdk.threads.spawn({
-        projectId,
-        environment: threadEnvironment(environment),
-        title,
-        prompt: formatWorkItemHandoffPrompt(detail)
-      });
-      return { threadId: thread.id, title };
+      return startThreadForScope(projectId, locator, environment);
     },
     getProjectScope: async ({ projectId }) => ({
       scope: await scopeView(projectId)
@@ -1271,21 +1340,15 @@ export default async function plugin(bb: BbPluginApi) {
             if (projectId === null) return needProject();
             const locator = rest[0];
             if (locator === undefined) return fail(usage);
-            const detail = await refreshItem(projectId, locator);
-            const { comments: _c, attachments: _a, ...item } = detail;
-            const title = threadTitleForItem(item);
             const worktree = argv.includes('--worktree');
-            const thread = await bb.sdk.threads.spawn({
+            const thread = await startThreadForScope(
               projectId,
-              environment: threadEnvironment(
-                worktree ? 'worktree' : 'project-default'
-              ),
-              title,
-              prompt: formatWorkItemHandoffPrompt(detail)
-            });
+              locator,
+              worktree ? 'worktree' : 'project-default'
+            );
             return reply(
-              { threadId: thread.id, title, locator, url: item.url, worktree },
-              `Started thread ${thread.id}${worktree ? ' in a new worktree' : ''} — ${title}`
+              { ...thread, locator, worktree },
+              `Started thread ${thread.threadId}${worktree && groupIdFromScope(projectId) === null ? ' in a new worktree' : ''} — ${thread.title}`
             );
           }
 

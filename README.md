@@ -1,13 +1,13 @@
 # Productive for BB
 
-Brings each BB project's [Productive.io](https://productive.io) tasks into one
-focused board — a list and kanban view, task detail with comments, status and
+Brings each BB project or Sidebar group’s [Productive.io](https://productive.io)
+tasks into one focused board — a list and kanban view, task detail with comments, status and
 assignee changes, task creation, saved filter presets, `@`/`#` mentions in the
 composer, and a `bb productive` CLI for agents.
 
 Modelled on the Taskboard plugin, but single-provider: one Productive API token
-serves the whole organization, and each BB project is mapped to one Productive
-project.
+serves the whole organization, and each BB project or Sidebar group can be
+mapped to one Productive project.
 
 ## Install
 
@@ -32,8 +32,8 @@ builds the server and app bundles.
    A plugin CLI command runs inside the BB server, so it has no stdin to pipe a
    secret through — the token is passed as a file path so it never lands in
    argv, shell history, or an agent transcript. Delete the file afterwards.
-3. Map the BB project to a Productive project in the panel's manage view, or
-   from the shell:
+3. Map the BB project or Sidebar group to a Productive project in the panel's
+   manage view. Project mappings can also be changed from the shell:
 
    ```
    bb productive config --productive-project <productive-project-id>
@@ -56,7 +56,7 @@ the Productive connection and each project's board mapping are unchanged.
 
 | Productive | This plugin |
 | --- | --- |
-| Project | The external project a BB project maps to |
+| Project | The external project a BB project or Sidebar group maps to |
 | Task | Board item |
 | Workflow status (`category_id` 1/2/3) | Status → `todo` / `in_progress` / `done` |
 | Task list | Optional lane filter within the project |
@@ -97,7 +97,7 @@ Productive's hierarchy is **Project -> Folder -> Task list -> Task**. A folder i
 what Productive used to call a board, and its task lists are that board's
 columns. The panel mirrors that:
 
-- Map a BB project to a Productive project, and optionally narrow it to one
+- Map a BB project or Sidebar group to a Productive project, and optionally narrow it to one
   folder.
 - Kanban lanes group by **workflow status** or by **task list** — the latter
   reproduces Productive's own board layout, in Productive's column order.
@@ -109,8 +109,10 @@ columns. The panel mirrors that:
 ## Working on a task
 
 `bb productive start <locator>`, or the **Start agent** button on a task,
-opens a new BB thread in the project the board is mapped to, with the task's
-fields as context. Nothing is written back to Productive.
+opens a new BB thread with the task's fields as context. A project board starts
+one project thread. A Sidebar group board starts the Sidebar group coordinator,
+which can fan work out across every repo in that group. Nothing is written back
+to Productive.
 
 Add `--worktree` (or use the split button on the task detail page) to give the
 thread its own git worktree off the project's default branch, so two tickets
