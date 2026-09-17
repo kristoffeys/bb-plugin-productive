@@ -479,14 +479,21 @@ describe('Productive task operations', () => {
     enqueue({
       data: [
         { type: 'people', id: 'p-1', attributes: { first_name: 'Ada', last_name: 'Lovelace' } },
+        { type: 'people', id: 'p-2', attributes: { first_name: 'Grace', last_name: 'Hopper' } },
         { type: 'people', attributes: { first_name: 'No', last_name: 'Id' } }
       ],
       links: { next: null }
     })
-    await expect(api().listAssignablePeople('ada')).resolves.toEqual([
+    await expect(api().listAssignablePeople({
+      query: 'ada',
+      projectId: 'proj-1',
+      preferredPersonId: 'p-2'
+    })).resolves.toEqual([
+      { id: 'p-2', name: 'Grace Hopper', email: undefined, avatarUrl: undefined },
       { id: 'p-1', name: 'Ada Lovelace', email: undefined, avatarUrl: undefined }
     ])
     expect(calls[0].url).toContain('filter%5Bstatus%5D=1')
+    expect(calls[0].url).toContain('filter%5Bproject_id%5D=proj-1')
     expect(calls[0].url).toContain('filter%5Bquery%5D=ada')
   })
 })

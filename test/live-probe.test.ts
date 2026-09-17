@@ -58,6 +58,6 @@ test.skipIf(!live)('live read-only probe', { timeout: 120_000 }, async () => {
     const taskAttachments = await api.listTaskAttachments(tasks[0].id);
     console.log('task attachments:', taskAttachments.map(a => `${a.name}(${a.contentType || '?'}) ${a.isImage ? 'image' : 'file'} ${a.size}b`));
   }
-  const people = await api.listAssignablePeople('pieter');
+  const people = await api.listAssignablePeople({ query: 'pieter' });
   console.log('people search:', people.slice(0, 3).map(p => `${p.id}:${p.name}`));
 });

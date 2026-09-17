@@ -582,6 +582,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
       try {
         const api = await requireApi();
+        const { personId } = await readConnectionSettings();
         const workflowId = await api.getProjectWorkflowId(
           scope.productiveProjectId
         );
@@ -590,7 +591,10 @@ export default async function plugin(bb: BbPluginApi) {
             workflowId === null ? undefined : { workflowId }
           ),
           api.listTaskLists(scope.productiveProjectId),
-          api.listAssignablePeople()
+          api.listAssignablePeople({
+            projectId: scope.productiveProjectId,
+            preferredPersonId: personId
+          })
         ]);
         const defaultStatus =
           statuses.find(status => status.categoryId === 1) ?? statuses[0];

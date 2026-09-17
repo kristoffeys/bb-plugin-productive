@@ -113,7 +113,11 @@ export interface ProductiveApi {
   /** Statuses for one workflow. Unscoped, Productive returns every workflow's
    *  statuses, which is wrong for a per-project board. */
   listWorkflowStatuses(args?: { workflowId?: string }): Promise<ProductiveWorkflowStatus[]>
-  listAssignablePeople(query?: string): Promise<ProductivePerson[]>
+  listAssignablePeople(args?: {
+    query?: string
+    projectId?: string
+    preferredPersonId?: string
+  }): Promise<ProductivePerson[]>
   /** One person by id. Cheaper than paging everyone to resolve a name. */
   getPerson(personId: string): Promise<ProductivePerson | null>
 }
@@ -454,19 +458,35 @@ export function createProductiveApi(
       return mapPerson(data) ?? null
     },
 
-    async listAssignablePeople(query?: string): Promise<ProductivePerson[]> {
+    async listAssignablePeople(args?: {
+      query?: string
+      projectId?: string
+      preferredPersonId?: string
+    }): Promise<ProductivePerson[]> {
       const params = new URLSearchParams()
       // Only active members are assignable.
       params.set('filter[status]', '1')
-      if (query?.trim()) {
-        params.set('filter[query]', query.trim())
+      if (args?.projectId) {
+        params.set('filter[project_id]', args.projectId)
+      }
+      if (args?.query?.trim()) {
+        params.set('filter[query]', args.query.trim())
       }
       const { records } = await transport.fetchPaged((page, pageSize) =>
         withPageParams(`/people?${params.toString()}`, page, pageSize)
       )
-      return records
+      const people = records
         .map((record) => mapPerson(record))
         .filter((person): person is ProductivePerson => person !== undefined)
+      const preferredPersonId = args?.preferredPersonId
+      if (preferredPersonId) {
+        // Keep Productive's ordering intact, except that the configured viewer
+        // is always the first choice in assignee dropdowns.
+        people.sort((left, right) =>
+          Number(right.id === preferredPersonId) - Number(left.id === preferredPersonId)
+        )
+      }
+      return people
     }
   }
 }
