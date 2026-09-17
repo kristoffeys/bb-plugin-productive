@@ -353,6 +353,9 @@ export function createWorkItemStore(bb: BbPluginApi) {
   const deleteProjectItems = db.prepare<[string]>(
     'DELETE FROM work_items WHERE bb_project_id = ?'
   );
+  const deleteItem = db.prepare<[string, string]>(
+    'DELETE FROM work_items WHERE bb_project_id = ? AND locator = ?'
+  );
   const writeSync = db.prepare<[string, string, number]>(`
     INSERT INTO project_sync (bb_project_id, last_synced_at, error, item_count)
     VALUES (?, ?, NULL, ?)
@@ -473,6 +476,22 @@ export function createWorkItemStore(bb: BbPluginApi) {
         throw new Error('Cannot write a work item outside its BB project');
       }
       writeItem(item);
+    },
+
+    remove(projectId: string, locator: string): boolean {
+      return db.transaction(() => {
+        const removed = deleteItem.run(projectId, locator).changes > 0;
+        if (removed) {
+          db.prepare<[string, string]>(
+            `UPDATE project_sync
+             SET item_count = (
+               SELECT COUNT(*) FROM work_items WHERE bb_project_id = ?
+             )
+             WHERE bb_project_id = ?`
+          ).run(projectId, projectId);
+        }
+        return removed;
+      })();
     },
 
     setSyncError(projectId: string, message: string): void {

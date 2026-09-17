@@ -484,4 +484,14 @@ describe('folder columns', () => {
     const read = store.get(PROJECT, '1');
     expect(read).toMatchObject({ folder: null, folderId: null });
   });
+
+  it('removes one cached item and updates the project item count', () => {
+    store.replaceAll(PROJECT, [item(), item({ locator: '2', key: '#2' })], 'now');
+
+    expect(store.remove(PROJECT, '1')).toBe(true);
+    expect(store.get(PROJECT, '1')).toBeNull();
+    expect(store.get(PROJECT, '2')).not.toBeNull();
+    expect(store.syncStatus(PROJECT).itemCount).toBe(1);
+    expect(store.remove(PROJECT, 'missing')).toBe(false);
+  });
 });

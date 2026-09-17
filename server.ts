@@ -13,7 +13,7 @@
 //
 // The API token lives in a 0600 file rather than a plugin setting so changing
 // it does not require a plugin reload.
-import { join, dirname } from 'node:path';
+import { join, dirname, basename, extname } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
@@ -30,6 +30,7 @@ import {
   parseMentionId,
   productiveRpcContract,
   type BoardStatus,
+  type AttachmentUploadInput,
   type ConnectionView,
   type CreateTaskInput,
   type ProjectScope,
@@ -42,9 +43,10 @@ import {
   type WorkStateCategory,
   type WorkStatusOption
 } from './contract.js';
+import { MAX_UI_ATTACHMENT_BYTES } from './contract.js';
 import { createWorkItemStore, type ProjectScopeDefaults } from './store.js';
 import { deleteSecretFile, writeSecretFile } from './lib/secret-file.js';
-import { flagValue, positionalArgs } from './cli-args.js';
+import { flagValue, flagValues, positionalArgs } from './cli-args.js';
 import {
   ProductiveApiError,
   BOARD_TASK_LIMIT,
@@ -533,6 +535,13 @@ export default async function plugin(bb: BbPluginApi) {
       await api.updateTask(locator, { title, description });
       return { item: await refreshItem(projectId, locator) };
     },
+    archiveItem: async ({ projectId, locator }) => {
+      const api = await requireApi();
+      await api.archiveTask(locator);
+      store.remove(projectId, locator);
+      bb.realtime.publish(ITEMS_CHANGED, { projectId });
+      return { archived: true as const };
+    },
     updateItemTaskList: async ({ projectId, locator, taskListId }) => {
       const api = await requireApi();
       await api.updateTask(locator, { taskListId });
@@ -540,9 +549,30 @@ export default async function plugin(bb: BbPluginApi) {
       const { comments: _comments, attachments: _attachments, ...item } = detail;
       return { item };
     },
-    addComment: async ({ projectId, locator, body }) => {
+    addComment: async ({ projectId, locator, body, attachments }) => {
       const api = await requireApi();
-      await api.addTaskComment(locator, body);
+      const comment = await api.addTaskComment(locator, body);
+      const warnings: string[] = [];
+      for (const attachment of attachments) {
+        try {
+          await api.uploadCommentAttachment(
+            comment.id,
+            decodeUiAttachment(attachment)
+          );
+        } catch (error) {
+          warnings.push(
+            `Could not attach ${attachment.name}: ${safeMessage(error)}`
+          );
+        }
+      }
+      return {
+        item: await refreshItem(projectId, locator),
+        warnings
+      };
+    },
+    uploadItemAttachment: async ({ projectId, locator, attachment }) => {
+      const api = await requireApi();
+      await api.uploadTaskAttachment(locator, decodeUiAttachment(attachment));
       return { item: await refreshItem(projectId, locator) };
     },
     getCreateTaskContext: async ({ projectId }) => {
@@ -727,6 +757,99 @@ export default async function plugin(bb: BbPluginApi) {
     }
   });
 
+  const CONTENT_TYPES: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.txt': 'text/plain',
+    '.csv': 'text/csv',
+    '.json': 'application/json',
+    '.zip': 'application/zip',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  };
+  function contentTypeFor(name: string): string {
+    return CONTENT_TYPES[extname(name).toLowerCase()] ?? 'application/octet-stream';
+  }
+
+  /**
+   * Upload local files onto a task. `bb productive create --attach` is meant
+   * for callers running on the same machine as the server — the bb-plugin-inbox
+   * bridge stages Gmail attachments in the server's own tmpdir before calling.
+   * ponytail: server-local reads only; route through bb.sdk.files with an
+   * explicit hostId if remote machines ever need to attach their own files.
+   */
+  async function attachFiles(
+    taskId: string,
+    paths: readonly string[]
+  ): Promise<{ uploaded: string[]; warnings: string[] }> {
+    if (paths.length === 0) return { uploaded: [], warnings: [] };
+    const api = await requireApi();
+    const uploaded: string[] = [];
+    const warnings: string[] = [];
+    for (const path of paths) {
+      const name = basename(path);
+      try {
+        const bytes = await readFile(path);
+        await api.uploadTaskAttachment(taskId, {
+          name,
+          contentType: contentTypeFor(name),
+          bytes
+        });
+        uploaded.push(name);
+      } catch (error) {
+        warnings.push(
+          `Could not attach ${name}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    return { uploaded, warnings };
+  }
+
+  function decodeUiAttachment(attachment: AttachmentUploadInput): {
+    name: string;
+    contentType: string;
+    bytes: Uint8Array;
+  } {
+    const bytes = Buffer.from(attachment.base64, 'base64');
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_UI_ATTACHMENT_BYTES) {
+      throw new Error(
+        `Attachments must be between 1 byte and ${MAX_UI_ATTACHMENT_BYTES} bytes.`
+      );
+    }
+    return {
+      name: attachment.name,
+      contentType: attachment.contentType || 'application/octet-stream',
+      bytes
+    };
+  }
+
+  /**
+   * The task list a new task lands in: the caller's choice, else the project's
+   * configured default, else its first list. Productive has no "no list" state.
+   */
+  async function resolveTaskListId(
+    productiveProjectId: string,
+    requested: string | null
+  ): Promise<string> {
+    if (requested !== null && requested !== '') return requested;
+    const api = await requireApi();
+    const taskLists = await api.listTaskLists(productiveProjectId);
+    const first = taskLists[0];
+    if (first === undefined) {
+      throw new Error(
+        'This Productive project has no task lists, so a task cannot be created in it. Add one in Productive first.'
+      );
+    }
+    return first.id;
+  }
+
   async function createTask(input: CreateTaskInput) {
     const scope = store.projectScope(input.projectId, SCOPE_DEFAULTS);
     if (scope.productiveProjectId === '') {
@@ -739,9 +862,16 @@ export default async function plugin(bb: BbPluginApi) {
     }
     const api = await requireApi();
     const orgId = await organizationId();
+    // Productive rejects a task with no task list ("task_list can't be blank").
+    // The create form already falls back to the project's first list; do the
+    // same here so the CLI and other plugins are not the odd one out.
+    const taskListId = await resolveTaskListId(
+      scope.productiveProjectId,
+      input.taskListId ?? (scope.taskListId === '' ? null : scope.taskListId)
+    );
     const created = await api.createTask({
       projectId: scope.productiveProjectId,
-      taskListId: input.taskListId ?? undefined,
+      taskListId,
       title: input.title,
       description: input.description,
       assigneeId: input.assigneeId ?? undefined,
@@ -879,7 +1009,8 @@ export default async function plugin(bb: BbPluginApi) {
     '  bb productive edit <locator> [--title <text>] [--description <text>] [--project <proj_id>] [--json]',
     '  bb productive create --title <text> [--description <text>] [--list <task-list-id>]',
     '                       [--status <status-id>] [--assignee <person-id>] [--due <YYYY-MM-DD>]',
-    '                       [--project <proj_id>] [--json]',
+    '                       [--attach <file-path>]... [--project <proj_id>] [--json]',
+    '  bb productive lists [--project <proj_id>] [--json]',
     '  bb productive refresh [--project <proj_id>] [--json]',
     '  bb productive config [--project <proj_id>] [--productive-project <id>] [--folder <id>] [--list <id>]',
     '                       [--assigned-to-me <on|off>] [--include-closed <on|off>] [--json]',
@@ -953,7 +1084,12 @@ export default async function plugin(bb: BbPluginApi) {
       {
         name: 'create',
         summary: 'Create a task in the mapped Productive project',
-        usage: 'bb productive create --title <text> [--description <text>] [--json]'
+        usage: 'bb productive create --title <text> [--description <text>] [--list <id>] [--attach <file-path>]... [--json]'
+      },
+      {
+        name: 'lists',
+        summary: "Task lists of the project's Productive project",
+        usage: 'bb productive lists [--project <proj_id>] [--json]'
       },
       {
         name: 'refresh',
@@ -1245,13 +1381,47 @@ export default async function plugin(bb: BbPluginApi) {
               assigneeId: flagValue(args, '--assignee'),
               dueDate: flagValue(args, '--due')
             });
+            const attached = await attachFiles(
+              result.item.locator,
+              flagValues(args, '--attach')
+            );
             return reply(
-              result,
+              { ...result, attachments: attached.uploaded },
               [
                 `Created ${result.item.key}: ${result.item.title}`,
                 result.item.url,
+                ...(attached.uploaded.length === 0
+                  ? []
+                  : [`Attached ${attached.uploaded.join(', ')}`]),
+                ...attached.warnings,
                 ...result.warnings
               ].join('\n')
+            );
+          }
+
+          case 'lists': {
+            if (projectId === null) return needProject();
+            const scope = store.projectScope(projectId, SCOPE_DEFAULTS);
+            if (scope.productiveProjectId === '') {
+              return fail('This bb project is not mapped to a Productive project.');
+            }
+            const api = await requireApi();
+            const taskLists = await api.listTaskLists(scope.productiveProjectId);
+            const options = taskLists.map(taskList => ({
+              id: taskList.id,
+              name: taskList.name,
+              isDefault:
+                scope.taskListId === ''
+                  ? taskList.id === taskLists[0]?.id
+                  : taskList.id === scope.taskListId
+            }));
+            return reply(
+              options,
+              options.length === 0
+                ? 'This Productive project has no task lists.'
+                : options
+                    .map(option => `${option.isDefault ? '*' : ' '} ${option.id}  ${option.name}`)
+                    .join('\n')
             );
           }
 

@@ -121,11 +121,28 @@ function totalPages(meta: ProductiveRecord | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 }
 
+/** `/data/attributes/title` or `/data/relationships/task_list` -> `title` / `task_list`. */
+function fieldFromPointer(pointer: string | undefined): string | null {
+  if (typeof pointer !== 'string') return null
+  const last = pointer.split('/').filter(Boolean).at(-1)
+  return last === undefined || last === 'data' ? null : last
+}
+
 async function readProductiveError(response: Response): Promise<string> {
   try {
-    const data = (await response.json()) as { errors?: { detail?: string; title?: string }[] }
+    const data = (await response.json()) as {
+      errors?: { detail?: string; title?: string; source?: { pointer?: string } }[]
+    }
+    // Productive answers a validation failure with a bare "can't be blank" and
+    // puts the field in `source.pointer`. Dropping the pointer leaves an error
+    // nobody can act on.
     const messages = (Array.isArray(data.errors) ? data.errors : [])
-      .map((error) => error.detail ?? error.title)
+      .map((error) => {
+        const message = error.detail ?? error.title
+        if (message === undefined) return undefined
+        const field = fieldFromPointer(error.source?.pointer)
+        return field === null ? message : `${field} ${message}`
+      })
       .filter((message): message is string => Boolean(message))
     if (messages.length > 0) {
       return messages.join('; ')

@@ -62,3 +62,14 @@ export function positionalArgs(argv: readonly string[]): string[] {
   }
   return positionals;
 }
+
+/** Every value of a repeatable flag, e.g. `--attach a.png --attach b.pdf`. */
+export function flagValues(argv: readonly string[], flag: string): string[] {
+  const values: string[] = []
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== flag) continue
+    const value = argv[index + 1]
+    if (value !== undefined && !value.startsWith('--')) values.push(value)
+  }
+  return values
+}

@@ -380,6 +380,15 @@ describe('Productive task operations', () => {
     expect(body(0).data.attributes.description).toBe('<p>hello<br>world</p>')
   })
 
+  it('archives a task with Productive delete semantics', async () => {
+    enqueue(null, 204)
+
+    await expect(api().archiveTask('825407')).resolves.toBeUndefined()
+    expect(calls[0].url).toContain('/tasks/825407')
+    expect(calls[0].init?.method).toBe('DELETE')
+    expect(calls[0].init?.body).toBeUndefined()
+  })
+
   it('creates a task with project, task list and assignee relationships', async () => {
     enqueue({ data: { type: 'tasks', id: '900', attributes: { task_number: 5 } } })
     enqueue({ data: { type: 'tasks', id: '900', attributes: { task_number: 5 } } })
@@ -455,7 +464,22 @@ describe('Productive task operations', () => {
     expect(comment).toMatchObject({ id: 'c-9', body: 'ack' })
   })
 
-  it('lists task lists and active assignable people', async () => {
+  it('allows an attachment-only comment without inventing visible body text', async () => {
+    enqueue({
+      data: {
+        type: 'comments',
+        id: 'c-10',
+        attributes: { body: '', created_at: '2026-05-30T12:00:00.000Z' }
+      }
+    })
+
+    await api().addTaskComment('825407', '')
+
+    expect(body(0).data.attributes).toEqual({})
+    expect(body(0).data.relationships.task).toEqual({ data: { type: 'tasks', id: '825407' } })
+  })
+
+  it('lists task lists and active project people with the viewer first', async () => {
     enqueue({
       data: [
         {

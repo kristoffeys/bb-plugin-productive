@@ -292,6 +292,23 @@ export const workItemDetailSchema = workItemSchema
   .strict();
 export type WorkItemDetail = z.infer<typeof workItemDetailSchema>;
 
+export const MAX_UI_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+export const MAX_UI_ATTACHMENTS = 5;
+const MAX_UI_ATTACHMENT_BASE64_LENGTH = 7_000_000;
+
+export const attachmentUploadInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(255),
+    contentType: z.string().trim().max(255).default('application/octet-stream'),
+    base64: z
+      .string()
+      .min(1)
+      .max(MAX_UI_ATTACHMENT_BASE64_LENGTH)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/u, 'Invalid attachment encoding')
+  })
+  .strict();
+export type AttachmentUploadInput = z.infer<typeof attachmentUploadInputSchema>;
+
 export const boardStatusSchema = z
   .object({
     configured: z.boolean(),
@@ -472,6 +489,15 @@ export const productiveRpcContract = defineRpcContract({
       ),
     output: z.object({ item: workItemDetailSchema }).strict()
   },
+  archiveItem: {
+    input: z
+      .object({
+        projectId: bbProjectIdSchema,
+        locator: productiveIdSchema
+      })
+      .strict(),
+    output: z.object({ archived: z.literal(true) }).strict()
+  },
   updateItemTaskList: {
     input: z
       .object({
@@ -488,7 +514,38 @@ export const productiveRpcContract = defineRpcContract({
       .object({
         projectId: bbProjectIdSchema,
         locator: productiveIdSchema,
-        body: z.string().trim().min(1).max(50_000)
+        body: z.string().max(50_000).default(''),
+        attachments: z
+          .array(attachmentUploadInputSchema)
+          .max(MAX_UI_ATTACHMENTS)
+          .default([])
+      })
+      .strict()
+      .refine(
+        input => input.body.trim() !== '' || input.attachments.length > 0,
+        { message: 'A comment or attachment is required' }
+      )
+      .refine(
+        input =>
+          input.attachments.reduce(
+            (total, attachment) => total + attachment.base64.length,
+            0
+          ) <= MAX_UI_ATTACHMENT_BASE64_LENGTH,
+        { message: 'Comment attachments are too large' }
+      ),
+    output: z
+      .object({
+        item: workItemDetailSchema,
+        warnings: z.array(z.string())
+      })
+      .strict()
+  },
+  uploadItemAttachment: {
+    input: z
+      .object({
+        projectId: bbProjectIdSchema,
+        locator: productiveIdSchema,
+        attachment: attachmentUploadInputSchema
       })
       .strict(),
     output: z.object({ item: workItemDetailSchema }).strict()

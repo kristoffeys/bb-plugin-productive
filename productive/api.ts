@@ -40,6 +40,9 @@ import type {
   ProductiveWorkflowStatus
 } from './types'
 
+/** Only used when Productive's upload policy omits its own bucket URL. */
+const S3_UPLOAD_FALLBACK_URL = 'https://productive-files-production.s3.eu-west-1.amazonaws.com'
+
 /** Verified against the live API: this include set resolves assignee, status,
  *  project, task-list and (via the nested `task_list.folder` hop) folder names
  *  in one call, so lists need no N+1 follow-ups. */
@@ -95,10 +98,24 @@ export interface ProductiveApi {
   getTask(taskId: string): Promise<ProductiveTask | null>
   createTask(args: ProductiveCreateTaskArgs): Promise<ProductiveTask>
   updateTask(taskId: string, updates: ProductiveTaskUpdate): Promise<ProductiveTask>
+  /** Moves a task and its comments to Productive's recoverable recycle bin. */
+  archiveTask(taskId: string): Promise<void>
   addTaskComment(taskId: string, body: string): Promise<ProductiveComment>
   getTaskComments(taskId: string): Promise<ProductiveComment[]>
   /** Attachments on the task itself (not those on its comments). */
   listTaskAttachments(taskId: string): Promise<ProductiveAttachment[]>
+
+  /** Upload a file and attach it to a task. Productive's flow is create the
+   *  attachment record, POST the bytes to the S3 bucket its `aws_policy`
+   *  describes, hand the resulting URL back, then link it to the task. */
+  uploadTaskAttachment(
+    taskId: string,
+    file: { name: string; contentType: string; bytes: Uint8Array }
+  ): Promise<string>
+  uploadCommentAttachment(
+    commentId: string,
+    file: { name: string; contentType: string; bytes: Uint8Array }
+  ): Promise<string>
 
   listProjects(args?: { query?: string; limit?: number }): Promise<ProductiveProject[]>
   listTaskLists(
@@ -128,6 +145,9 @@ export function createProductiveApi(
 ): ProductiveApi {
   const transport = createTransport(credentials, options)
   const { organizationId } = transport
+  // The S3 upload is a different host with form-data, so it bypasses the
+  // JSON:API transport and uses the raw fetch directly.
+  const doFetch = options?.fetchImpl ?? globalThis.fetch
 
   async function getTask(taskId: string): Promise<ProductiveTask | null> {
     const response = await transport.request<JsonApiResponse>(
@@ -138,6 +158,83 @@ export function createProductiveApi(
       return null
     }
     return mapProductiveTask(organizationId, data, response?.included)
+  }
+
+  async function uploadAttachment(
+    target: { type: 'task' | 'comment'; id: string },
+    file: { name: string; contentType: string; bytes: Uint8Array }
+  ): Promise<string> {
+    const name = file.name.trim() || 'attachment'
+    const created = await transport.request<JsonApiResponse>('/attachments', {
+      method: 'POST',
+      body: JSON.stringify({
+        data: {
+          type: 'attachments',
+          attributes: {
+            name,
+            content_type: file.contentType,
+            size: file.bytes.byteLength,
+            attachable_type: target.type
+          }
+        }
+      })
+    })
+    const record = singleRecord(created)
+    const attachmentId = asString(record.id)
+    const policy = asRecord(asRecord(record.attributes).aws_policy)
+    const bucketUrl = asString(policy.url) || asString(asRecord(record.attributes).upload_url)
+    if (!attachmentId || Object.keys(policy).length === 0) {
+      throw new ProductiveApiError(
+        `Productive did not return an upload policy for ${name}.`,
+        null
+      )
+    }
+
+    // Everything in aws_policy except `url` is an S3 form field; the file
+    // must come last or S3 ignores the fields that follow it.
+    const form = new FormData()
+    for (const [key, value] of Object.entries(policy)) {
+      if (key === 'url' || value === null || value === undefined) continue
+      form.append(key, String(value))
+    }
+    form.append('File', new Blob([file.bytes as BlobPart], { type: file.contentType }), name)
+    const targetUrl = bucketUrl || S3_UPLOAD_FALLBACK_URL
+    const uploaded = await doFetch(targetUrl, { method: 'POST', body: form })
+    if (!uploaded.ok) {
+      throw new ProductiveApiError(
+        `Uploading ${name} to storage failed (${uploaded.status}).`,
+        uploaded.status
+      )
+    }
+    const location =
+      uploaded.headers.get('location') ??
+      `${targetUrl.replace(/\/$/, '')}/${encodeURI(asString(policy.key))}`
+
+    await transport.request<JsonApiResponse>(
+      `/attachments/${encodeURIComponent(attachmentId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          data: { type: 'attachments', attributes: { temp_url: location } }
+        })
+      }
+    )
+    await transport.request<JsonApiResponse>(
+      `/${target.type}s/${encodeURIComponent(target.id)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          data: {
+            type: `${target.type}s`,
+            id: target.id,
+            relationships: {
+              attachments: { data: [{ type: 'attachments', id: attachmentId }] }
+            }
+          }
+        })
+      }
+    )
+    return attachmentId
   }
 
   /** Re-read a task after a mutation so callers always get the server's view
@@ -222,6 +319,20 @@ export function createProductiveApi(
     },
 
     getTask,
+
+    async uploadTaskAttachment(
+      taskId: string,
+      file: { name: string; contentType: string; bytes: Uint8Array }
+    ): Promise<string> {
+      return uploadAttachment({ type: 'task', id: taskId }, file)
+    },
+
+    async uploadCommentAttachment(
+      commentId: string,
+      file: { name: string; contentType: string; bytes: Uint8Array }
+    ): Promise<string> {
+      return uploadAttachment({ type: 'comment', id: commentId }, file)
+    },
 
     async createTask(args: ProductiveCreateTaskArgs): Promise<ProductiveTask> {
       const title = args.title.trim()
@@ -309,13 +420,23 @@ export function createProductiveApi(
       return reloadTask(taskId)
     },
 
+    async archiveTask(taskId: string): Promise<void> {
+      if (!taskId) {
+        throw new ProductiveApiError('A task id is required.')
+      }
+      await transport.request(`/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'DELETE'
+      })
+    },
+
     async addTaskComment(taskId: string, body: string): Promise<ProductiveComment> {
+      const attributes = body.trim() ? { body: markdownToBody(body) } : {}
       const response = await transport.request<JsonApiResponse>('/comments', {
         method: 'POST',
         body: JSON.stringify({
           data: {
             type: 'comments',
-            attributes: { body: markdownToBody(body) },
+            attributes,
             relationships: { task: { data: { type: 'tasks', id: taskId } } }
           }
         })
@@ -334,12 +455,14 @@ export function createProductiveApi(
       const lookup = buildIncludedLookup(included)
       // Attachments side-load in `included[]` as `attachments` records; group
       // them by the comment they point at via their `comment` relationship.
+      const attachmentById = new Map<string, ProductiveAttachment>()
       const attachmentsByCommentId = new Map<string, ProductiveAttachment[]>()
       for (const included_record of included) {
         if (asString(included_record.type) !== 'attachments' || isAttachmentDeleted(included_record)) {
           continue
         }
         const attachment = mapAttachment(included_record, lookup)
+        attachmentById.set(attachment.id, attachment)
         if (!attachment.commentId) {
           continue
         }
@@ -347,9 +470,19 @@ export function createProductiveApi(
         bucket.push(attachment)
         attachmentsByCommentId.set(attachment.commentId, bucket)
       }
-      return records.map((record) =>
-        mapComment(record, lookup, attachmentsByCommentId.get(asString(record.id)) ?? [])
-      )
+      return records.map((record) => {
+        const commentId = asString(record.id)
+        const relationshipData = asRecord(asRecord(record.relationships).attachments).data
+        const relationshipAttachments = Array.isArray(relationshipData)
+          ? relationshipData
+              .map(entry => attachmentById.get(asString(asRecord(entry).id)))
+              .filter((attachment): attachment is ProductiveAttachment => attachment !== undefined)
+          : []
+        const attachments = relationshipAttachments.length > 0
+          ? relationshipAttachments
+          : (attachmentsByCommentId.get(commentId) ?? [])
+        return mapComment(record, lookup, attachments)
+      })
     },
 
     async listTaskAttachments(taskId: string): Promise<ProductiveAttachment[]> {

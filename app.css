@@ -528,6 +528,49 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .tb-markdown-editor {
+    border-color: var(--tb-border-strong);
+    background: color-mix(in oklch, var(--canvas) 98.6%, var(--ink) 1.4%);
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklch, var(--canvas) 86%, transparent),
+      0 1px 2px color-mix(in oklab, var(--ink) 4%, transparent);
+    transition:
+      border-color 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .tb-markdown-editor:focus-within {
+    border-color: color-mix(in oklch, var(--tb-blue) 48%, var(--tb-border));
+    box-shadow:
+      0 0 0 2px color-mix(in oklch, var(--tb-blue) 16%, transparent),
+      0 1px 2px color-mix(in oklab, var(--ink) 5%, transparent);
+  }
+
+  .tb-markdown-toolbar,
+  .tb-markdown-footer {
+    border-color: var(--tb-border);
+    background: color-mix(in oklch, var(--tb-surface) 66%, var(--canvas));
+  }
+
+  .tb-markdown-mode {
+    background: color-mix(in oklch, var(--ink) 5%, transparent);
+  }
+
+  .tb-markdown-mode [aria-pressed='true'] {
+    background: var(--canvas);
+    color: var(--ink);
+    box-shadow: 0 1px 2px color-mix(in oklab, var(--ink) 9%, transparent);
+  }
+
+  .tb-markdown-input,
+  .tb-markdown-preview {
+    background: var(--canvas);
+  }
+
+  .tb-markdown-input::placeholder {
+    color: var(--tb-ink-soft);
+  }
+
   .tb-comment-rail > div {
     box-shadow: inset 1px 0 0 var(--border-hairline);
   }

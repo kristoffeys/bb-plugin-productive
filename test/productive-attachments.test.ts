@@ -199,7 +199,10 @@ describe('getTaskComments attachment matching', () => {
           type: 'comments',
           id: 'comment-2',
           attributes: { body: 'second', created_at: '2026-01-02T00:00:00.000Z' },
-          relationships: { creator: { data: { type: 'people', id: 'person-1' } } }
+          relationships: {
+            creator: { data: { type: 'people', id: 'person-1' } },
+            attachments: { data: [{ type: 'attachments', id: 'att-3' }] }
+          }
         }
       ],
       included: [
@@ -229,6 +232,18 @@ describe('getTaskComments attachment matching', () => {
             attachable_type: 'comment'
           },
           relationships: { comment: { data: { type: 'comments', id: 'comment-1' } } }
+        },
+        {
+          type: 'attachments',
+          id: 'att-3',
+          attributes: {
+            name: 'relationship-only.pdf',
+            content_type: 'application/pdf',
+            size: 2,
+            url: 'https://files.productive.io/att-3',
+            deleted_at: null,
+            attachable_type: 'comment'
+          }
         }
       ],
       links: { next: null }
@@ -237,7 +252,7 @@ describe('getTaskComments attachment matching', () => {
     const comments = await api().getTaskComments('task-1')
     const byId = new Map(comments.map((c) => [c.id, c]))
     expect(byId.get('comment-1')?.attachments.map((a) => a.id)).toEqual(['att-1'])
-    expect(byId.get('comment-2')?.attachments).toEqual([])
+    expect(byId.get('comment-2')?.attachments.map((a) => a.id)).toEqual(['att-3'])
   })
 })
 
@@ -251,5 +266,116 @@ describe('buildIncludedLookup sanity', () => {
       id: 'att-1',
       attributes: { name: 'x' }
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// uploadTaskAttachment — Productive's four-step upload flow
+// ---------------------------------------------------------------------------
+
+describe('uploadTaskAttachment', () => {
+  it('creates the record, posts the bytes, then links it to the task', async () => {
+    enqueue({
+      data: {
+        type: 'attachments',
+        id: 'att-9',
+        attributes: {
+          aws_policy: {
+            url: 'https://bucket.s3.eu-west-1.amazonaws.com',
+            key: 'uploads/att-9/trace.pdf',
+            policy: 'base64policy',
+            'x-amz-signature': 'sig'
+          }
+        }
+      }
+    })
+    enqueue(null, 204) // the S3 POST
+    enqueue({ data: { type: 'attachments', id: 'att-9' } })
+    enqueue({ data: { type: 'tasks', id: 'task-7' } })
+
+    const id = await api().uploadTaskAttachment('task-7', {
+      name: 'trace.pdf',
+      contentType: 'application/pdf',
+      bytes: new Uint8Array([1, 2, 3])
+    })
+
+    expect(id).toBe('att-9')
+    expect(calls.map(call => `${call.init?.method ?? 'GET'} ${call.url}`)).toEqual([
+      'POST https://api.productive.io/api/v2/attachments',
+      'POST https://bucket.s3.eu-west-1.amazonaws.com',
+      'PATCH https://api.productive.io/api/v2/attachments/att-9',
+      'PATCH https://api.productive.io/api/v2/tasks/task-7'
+    ])
+
+    const created = JSON.parse(String(calls[0]!.init?.body))
+    expect(created.data.attributes).toMatchObject({
+      name: 'trace.pdf',
+      content_type: 'application/pdf',
+      size: 3,
+      attachable_type: 'task'
+    })
+
+    // The S3 body is form-data carrying every policy field except `url`,
+    // with the file last.
+    const form = calls[1]!.init?.body as FormData
+    expect(form.get('key')).toBe('uploads/att-9/trace.pdf')
+    expect(form.get('policy')).toBe('base64policy')
+    expect(form.get('url')).toBeNull()
+    expect([...form.keys()].at(-1)).toBe('File')
+
+    const linked = JSON.parse(String(calls[3]!.init?.body))
+    expect(linked.data.relationships.attachments.data).toEqual([
+      { type: 'attachments', id: 'att-9' }
+    ])
+  })
+
+  it('reports a failed storage upload instead of linking a broken attachment', async () => {
+    enqueue({
+      data: {
+        type: 'attachments',
+        id: 'att-1',
+        attributes: { aws_policy: { url: 'https://bucket.s3.amazonaws.com', key: 'k' } }
+      }
+    })
+    enqueue({ message: 'nope' }, 403)
+
+    await expect(
+      api().uploadTaskAttachment('task-1', {
+        name: 'big.pdf',
+        contentType: 'application/pdf',
+        bytes: new Uint8Array([1])
+      })
+    ).rejects.toThrow(/storage failed \(403\)/)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('links uploaded files to comments with the comment attachable type', async () => {
+    enqueue({
+      data: {
+        type: 'attachments',
+        id: 'att-comment',
+        attributes: {
+          aws_policy: {
+            url: 'https://bucket.s3.amazonaws.com',
+            key: 'uploads/comment/image.png'
+          }
+        }
+      }
+    })
+    enqueue(null, 204)
+    enqueue({ data: { type: 'attachments', id: 'att-comment' } })
+    enqueue({ data: { type: 'comments', id: 'comment-7' } })
+
+    await api().uploadCommentAttachment('comment-7', {
+      name: 'image.png',
+      contentType: 'image/png',
+      bytes: new Uint8Array([1, 2])
+    })
+
+    const created = JSON.parse(String(calls[0]!.init?.body))
+    expect(created.data.attributes.attachable_type).toBe('comment')
+    expect(calls[3]?.url).toContain('/comments/comment-7')
+    const linked = JSON.parse(String(calls[3]!.init?.body))
+    expect(linked.data).toMatchObject({ type: 'comments', id: 'comment-7' })
   })
 })

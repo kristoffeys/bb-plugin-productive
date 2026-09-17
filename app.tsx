@@ -21,6 +21,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -85,10 +86,13 @@ import { isComposerTaskActionEnabled } from './composer-action-settings.js';
 import {
   CONNECTION_CHANGED,
   ITEMS_CHANGED,
+  MAX_UI_ATTACHMENT_BYTES,
+  MAX_UI_ATTACHMENTS,
   PRESETS_CHANGED,
   connectionInteractionPayloadSchema,
   connectionInteractionResponseSchema,
   productiveRpcContract,
+  type AttachmentUploadInput,
   type ConnectionMutation,
   type ConnectionView,
   type CreateTaskContext,
@@ -114,6 +118,10 @@ import {
   type WorkStatusOption
 } from './contract.js';
 import { FILTER_PRESET_NAME_MAX_LENGTH } from './filter-presets.js';
+import {
+  applyMarkdownFormat,
+  type MarkdownFormat
+} from './markdown-editor.js';
 import {
   DEFAULT_WORKFLOW_STATUS_ORDER,
   LANE_GROUPINGS,
@@ -2612,34 +2620,347 @@ function TrackerBoard({
 // Detail view
 // ---------------------------------------------------------------------------
 
+const MARKDOWN_ACTIONS: readonly {
+  format: MarkdownFormat;
+  label: string;
+  shortcut?: string;
+  symbol: string;
+}[] = [
+  { format: 'heading', label: 'Heading', symbol: 'H2' },
+  { format: 'bold', label: 'Bold', shortcut: '⌘B', symbol: 'B' },
+  { format: 'italic', label: 'Italic', shortcut: '⌘I', symbol: 'I' },
+  { format: 'bulleted-list', label: 'Bulleted list', symbol: '•' },
+  { format: 'checklist', label: 'Checklist', symbol: '☐' },
+  { format: 'link', label: 'Link', shortcut: '⌘K', symbol: '↗' },
+  { format: 'code', label: 'Inline code', symbol: '</>' }
+];
+const EMPTY_ATTACHMENT_FILES: readonly File[] = [];
+
+function attachmentFileKey(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+async function fileToAttachmentUpload(file: File): Promise<AttachmentUploadInput> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  const chunkSize = 32_768;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return {
+    name: file.name || 'attachment',
+    contentType: file.type || 'application/octet-stream',
+    base64: btoa(binary)
+  };
+}
+
+function MarkdownEditor({
+  id,
+  value,
+  onChange,
+  placeholder,
+  rows = 8,
+  maxLength,
+  disabled = false,
+  ariaLabel = 'Markdown editor',
+  attachments = EMPTY_ATTACHMENT_FILES,
+  onAttachmentsChange
+}: {
+  id?: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  rows?: number;
+  maxLength?: number;
+  disabled?: boolean;
+  ariaLabel?: string;
+  attachments?: readonly File[];
+  onAttachmentsChange?: (files: File[]) => void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewing, setPreviewing] = useState(false);
+
+  const addAttachments = useCallback(
+    (incoming: readonly File[]) => {
+      if (!onAttachmentsChange || incoming.length === 0) return;
+      const available = Math.max(0, MAX_UI_ATTACHMENTS - attachments.length);
+      const seen = new Set(attachments.map(attachmentFileKey));
+      const valid = incoming.filter(file => {
+        if (file.size === 0) {
+          toast.error(`${file.name || 'Attachment'} is empty`);
+          return false;
+        }
+        if (file.size > MAX_UI_ATTACHMENT_BYTES) {
+          toast.error(`${file.name || 'Attachment'} is too large`, {
+            description: `Each attachment can be up to ${formatAttachmentSize(MAX_UI_ATTACHMENT_BYTES)}.`
+          });
+          return false;
+        }
+        const key = attachmentFileKey(file);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (valid.length > available) {
+        toast.error(`Add up to ${MAX_UI_ATTACHMENTS} attachments at a time.`);
+      }
+      onAttachmentsChange([...attachments, ...valid.slice(0, available)]);
+    },
+    [attachments, onAttachmentsChange]
+  );
+
+  const formatSelection = useCallback(
+    (format: MarkdownFormat) => {
+      const textarea = textareaRef.current;
+      if (!textarea || disabled) return;
+      const edit = applyMarkdownFormat(
+        value,
+        textarea.selectionStart,
+        textarea.selectionEnd,
+        format
+      );
+      onChange(edit.value);
+      requestAnimationFrame(() => {
+        textarea.focus();
+        textarea.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+      });
+    },
+    [disabled, onChange, value]
+  );
+
+  const handleShortcut = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const format =
+      event.key.toLowerCase() === 'b'
+        ? 'bold'
+        : event.key.toLowerCase() === 'i'
+          ? 'italic'
+          : event.key.toLowerCase() === 'k'
+            ? 'link'
+            : null;
+    if (format === null) return;
+    event.preventDefault();
+    formatSelection(format);
+  };
+
+  const handlePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files);
+    if (files.length === 0 || !onAttachmentsChange) return;
+    event.preventDefault();
+    addAttachments(files);
+  };
+
+  return (
+    <div className="tb-markdown-editor overflow-hidden rounded-lg border">
+      <div className="tb-markdown-toolbar flex min-h-9 items-center justify-between gap-2 border-b px-1.5 py-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+          {MARKDOWN_ACTIONS.map(action => (
+            <Tooltip key={action.format}>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={action.label}
+                  disabled={disabled || previewing}
+                  className="h-7 min-w-7 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => formatSelection(action.format)}
+                >
+                  <span
+                    className={cn(
+                      'leading-none',
+                      action.format === 'bold' && 'font-bold',
+                      action.format === 'italic' && 'italic',
+                      action.format === 'code' && 'font-mono text-[10px]'
+                    )}
+                  >
+                    {action.symbol}
+                  </span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-xs">
+                {action.label}{action.shortcut ? ` · ${action.shortcut}` : ''}
+              </TooltipContent>
+            </Tooltip>
+          ))}
+          {onAttachmentsChange ? (
+            <>
+              <div className="mx-1 h-4 w-px bg-border" />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Add attachments"
+                    disabled={disabled || attachments.length >= MAX_UI_ATTACHMENTS}
+                    className="h-7 min-w-7 px-1.5 text-muted-foreground hover:text-foreground"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Icon name="Paperclip" className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  Attach files or paste them here
+                </TooltipContent>
+              </Tooltip>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                aria-label="Choose attachments"
+                className="sr-only"
+                tabIndex={-1}
+                onChange={event => {
+                  addAttachments(Array.from(event.target.files ?? []));
+                  event.target.value = '';
+                }}
+              />
+            </>
+          ) : null}
+        </div>
+        <div className="tb-markdown-mode flex shrink-0 rounded-md p-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-pressed={!previewing}
+            className="h-6 gap-1 rounded px-2 text-[11px]"
+            disabled={disabled}
+            onClick={() => setPreviewing(false)}
+          >
+            <Icon name="Edit" className="size-3" />
+            Write
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-pressed={previewing}
+            className="h-6 gap-1 rounded px-2 text-[11px]"
+            disabled={disabled}
+            onClick={() => setPreviewing(true)}
+          >
+            <Icon name="Eye" className="size-3" />
+            Preview
+          </Button>
+        </div>
+      </div>
+      {previewing ? (
+        <div className="tb-markdown-preview min-h-32 px-4 py-3 text-sm" style={{ minHeight: `${Math.max(rows, 3) * 1.5}rem` }}>
+          {value.trim() ? (
+            <Markdown content={value} />
+          ) : (
+            <p className="text-muted-foreground">Nothing to preview yet.</p>
+          )}
+        </div>
+      ) : (
+        <Textarea
+          ref={textareaRef}
+          id={id}
+          value={value}
+          onChange={event => onChange(event.target.value)}
+          onKeyDown={handleShortcut}
+          onPaste={handlePaste}
+          placeholder={placeholder}
+          rows={rows}
+          maxLength={maxLength}
+          disabled={disabled}
+          aria-label={ariaLabel}
+          className="tb-markdown-input min-h-0 resize-y rounded-none border-0 px-4 py-3 text-sm leading-6 shadow-none focus-visible:ring-0"
+        />
+      )}
+      {attachments.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 border-t border-border-hairline bg-background px-3 py-2">
+          {attachments.map(file => (
+            <span
+              key={attachmentFileKey(file)}
+              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-secondary/50 py-1 pl-2 pr-1 text-xs"
+            >
+              <Icon name="FileAttachment" className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 truncate">{file.name || 'Pasted attachment'}</span>
+              <span className="shrink-0 text-muted-foreground">
+                {formatAttachmentSize(file.size)}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${file.name || 'attachment'}`}
+                disabled={disabled}
+                className="size-5 rounded"
+                onClick={() =>
+                  onAttachmentsChange?.(
+                    attachments.filter(candidate => attachmentFileKey(candidate) !== attachmentFileKey(file))
+                  )
+                }
+              >
+                <Icon name="X" className="size-3" />
+              </Button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="tb-markdown-footer flex items-center justify-between border-t px-3 py-1.5 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5">
+          <Icon name="Code" className="size-3" />
+          Markdown
+        </span>
+        <span className="tabular-nums">
+          {value.length.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()}` : ''}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function CommentForm({
   pending,
   onSubmit
 }: {
   pending: boolean;
-  onSubmit: (body: string) => Promise<void>;
+  onSubmit: (body: string, attachments: AttachmentUploadInput[]) => Promise<void>;
 }) {
   const [body, setBody] = useState('');
+  const [attachments, setAttachments] = useState<File[]>([]);
   return (
     <form
       className="mt-4 space-y-2"
       onSubmit={event => {
         event.preventDefault();
         const trimmed = body.trim();
-        if (!trimmed || pending) return;
-        void onSubmit(trimmed).then(() => setBody(''));
+        if ((!trimmed && attachments.length === 0) || pending) return;
+        void Promise.all(attachments.map(fileToAttachmentUpload))
+          .then(uploadInputs => onSubmit(trimmed, uploadInputs))
+          .then(() => {
+            setBody('');
+            setAttachments([]);
+          })
+          .catch(error => {
+            toast.error('Could not prepare attachments', {
+              description: describeError(error)
+            });
+          });
       }}
     >
-      <Textarea
+      <MarkdownEditor
         value={body}
-        onChange={event => setBody(event.target.value)}
-        placeholder="Write a comment… (markdown supported)"
+        onChange={setBody}
+        placeholder="Write a comment…"
         rows={3}
         maxLength={50_000}
         disabled={pending}
+        ariaLabel="Comment"
+        attachments={attachments}
+        onAttachmentsChange={setAttachments}
       />
       <div className="flex justify-end">
-        <Button type="submit" size="sm" disabled={pending || body.trim() === ''}>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={pending || (body.trim() === '' && attachments.length === 0)}
+        >
           {pending ? 'Posting…' : 'Comment'}
         </Button>
       </div>
@@ -2665,7 +2986,10 @@ function TrackerDetail({
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editDescription, setEditDescription] = useState('');
+  const [editAttachments, setEditAttachments] = useState<File[]>([]);
   const [savingContent, setSavingContent] = useState(false);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   const load = useCallback(async () => {
     const requestRevision = ++requestRevisionRef.current;
@@ -2756,10 +3080,12 @@ function TrackerDetail({
     if (!item) return;
     setEditTitle(item.title);
     setEditDescription(item.description);
+    setEditAttachments([]);
     setEditing(true);
   }, [item]);
 
   const cancelEditing = useCallback(() => {
+    setEditAttachments([]);
     setEditing(false);
   }, []);
 
@@ -2776,37 +3102,52 @@ function TrackerDetail({
     }
     const titleChanged = trimmedTitle !== item.title;
     const descriptionChanged = editDescription !== item.description;
-    if (!titleChanged && !descriptionChanged) {
+    if (!titleChanged && !descriptionChanged && editAttachments.length === 0) {
       setEditing(false);
       return;
     }
     setSavingContent(true);
     try {
-      const result = await rpc.call('updateItemContent', {
-        projectId: route.projectId,
-        locator: route.locator,
-        ...(titleChanged ? { title: trimmedTitle } : {}),
-        ...(descriptionChanged ? { description: editDescription } : {})
-      });
-      setItem(result.item);
+      if (titleChanged || descriptionChanged) {
+        const result = await rpc.call('updateItemContent', {
+          projectId: route.projectId,
+          locator: route.locator,
+          ...(titleChanged ? { title: trimmedTitle } : {}),
+          ...(descriptionChanged ? { description: editDescription } : {})
+        });
+        setItem(result.item);
+      }
+      for (const file of editAttachments) {
+        const result = await rpc.call('uploadItemAttachment', {
+          projectId: route.projectId,
+          locator: route.locator,
+          attachment: await fileToAttachmentUpload(file)
+        });
+        setItem(result.item);
+        setEditAttachments(current => current.filter(candidate => candidate !== file));
+      }
       setEditing(false);
     } catch (nextError) {
       toast.error(`Could not update ${item.key}`, { description: describeError(nextError) });
     } finally {
       setSavingContent(false);
     }
-  }, [editDescription, editTitle, item, route.locator, route.projectId, rpc]);
+  }, [editAttachments, editDescription, editTitle, item, route.locator, route.projectId, rpc]);
 
   const addComment = useCallback(
-    async (body: string) => {
+    async (body: string, attachments: AttachmentUploadInput[]) => {
       setPostingComment(true);
       try {
         const result = await rpc.call('addComment', {
           projectId: route.projectId,
           locator: route.locator,
-          body
+          body,
+          attachments
         });
         setItem(result.item);
+        if (result.warnings.length > 0) {
+          toast.warning(result.warnings.join(' '));
+        }
       } catch (nextError) {
         toast.error('Could not post comment', { description: describeError(nextError) });
       } finally {
@@ -2815,6 +3156,30 @@ function TrackerDetail({
     },
     [route.locator, route.projectId, rpc]
   );
+
+  const archiveItem = useCallback(async () => {
+    if (!item || archiving) return;
+    setArchiving(true);
+    try {
+      await rpc.call('archiveItem', {
+        projectId: route.projectId,
+        locator: route.locator
+      });
+      toast.success(`${item.key} archived`, {
+        description: 'The task can be restored from Productive’s recycle bin.'
+      });
+      setArchiveDialogOpen(false);
+      navigate.toPluginPanel(PANEL_PATH, {
+        subPath: routeToSubPath({ kind: 'project', projectId: route.projectId })
+      });
+    } catch (nextError) {
+      toast.error(`Could not archive ${item.key}`, {
+        description: describeError(nextError)
+      });
+    } finally {
+      setArchiving(false);
+    }
+  }, [archiving, item, navigate, route.locator, route.projectId, rpc]);
 
   if (item === undefined) {
     return (
@@ -2926,6 +3291,16 @@ function TrackerDetail({
                   Open
                 </a>
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => setArchiveDialogOpen(true)}
+              >
+                <Icon name="Archive" className="size-3.5" />
+                Archive
+              </Button>
             </div>
           </div>
 
@@ -2962,13 +3337,16 @@ function TrackerDetail({
             <h2 className="mb-3 text-sm font-semibold">Description</h2>
             {editing ? (
               <div className="space-y-2">
-                <Textarea
+                <MarkdownEditor
                   value={editDescription}
-                  onChange={event => setEditDescription(event.target.value)}
-                  placeholder="Markdown supported"
+                  onChange={setEditDescription}
+                  placeholder="Add context, acceptance criteria, or links…"
                   rows={10}
                   maxLength={100_000}
                   disabled={savingContent}
+                  ariaLabel="Description"
+                  attachments={editAttachments}
+                  onAttachmentsChange={setEditAttachments}
                 />
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="outline" size="sm" disabled={savingContent} onClick={cancelEditing}>
@@ -3049,6 +3427,41 @@ function TrackerDetail({
           </dl>
         </aside>
       </div>
+      <Dialog
+        open={archiveDialogOpen}
+        onOpenChange={open => {
+          if (!archiving) setArchiveDialogOpen(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Archive {item.key}?</DialogTitle>
+            <DialogDescription>
+              This moves “{item.title}” and its comments to Productive’s recycle bin. It
+              disappears from this board, but can still be restored in Productive.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={archiving}
+              onClick={() => setArchiveDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={archiving}
+              onClick={() => void archiveItem()}
+            >
+              <Icon name={archiving ? 'Loading' : 'Archive'} className={cn(archiving && 'animate-spin')} />
+              {archiving ? 'Archiving…' : 'Archive task'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -3128,6 +3541,7 @@ function CreateTaskDialog(props: CreateTaskDialogProps) {
   const [contextError, setContextError] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [attachments, setAttachments] = useState<File[]>([]);
   const [metadata, setMetadata] = useState<CreateTaskMetadata>();
   const [metadataLoading, setMetadataLoading] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
@@ -3145,6 +3559,7 @@ function CreateTaskDialog(props: CreateTaskDialogProps) {
     setContextError(null);
     setTitle(assisted ? initialPrompt.slice(0, 500) : '');
     setDescription('');
+    setAttachments([]);
     setMetadata(undefined);
     setMetadataLoading(false);
     setMetadataError(null);
@@ -3223,9 +3638,22 @@ function CreateTaskDialog(props: CreateTaskDialogProps) {
         dueDate: dueDate || null
       };
       const result = await rpc.call('createTask', input);
+      const uploadWarnings: string[] = [];
+      for (const file of attachments) {
+        try {
+          await rpc.call('uploadItemAttachment', {
+            projectId,
+            locator: result.item.locator,
+            attachment: await fileToAttachmentUpload(file)
+          });
+        } catch (error) {
+          uploadWarnings.push(`Could not attach ${file.name}: ${describeError(error)}`);
+        }
+      }
       onCreated?.(result);
       toast.success(`${result.item.key} created`);
-      if (result.warnings.length > 0) toast.warning(result.warnings.join(' '));
+      const warnings = [...result.warnings, ...uploadWarnings];
+      if (warnings.length > 0) toast.warning(warnings.join(' '));
       onOpenChange(false);
     } catch (error) {
       setCreateError(describeError(error));
@@ -3333,15 +3761,18 @@ function CreateTaskDialog(props: CreateTaskDialogProps) {
               <label htmlFor={`${formId}-description`} className="text-xs font-semibold">
                 Description
               </label>
-              <Textarea
+              <MarkdownEditor
                 id={`${formId}-description`}
                 value={description}
                 rows={7}
                 maxLength={100_000}
                 placeholder="Add context, acceptance criteria, or links…"
                 disabled={creating}
-                onChange={event => {
-                  setDescription(event.target.value);
+                ariaLabel="Description"
+                attachments={attachments}
+                onAttachmentsChange={setAttachments}
+                onChange={value => {
+                  setDescription(value);
                   setCreateError(null);
                 }}
               />
