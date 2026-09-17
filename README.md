@@ -9,6 +9,12 @@ Modelled on the Taskboard plugin, but single-provider: one Productive API token
 serves the whole organization, and each BB project or Sidebar group can be
 mapped to one Productive project.
 
+A Sidebar group owns the mapping for all of its member projects. While a
+project belongs to a group it cannot have a separate active mapping; its panel,
+composer actions, thread sidebar, mentions, and CLI context all inherit the
+group board. A previously saved project mapping stays dormant and becomes
+active again only if the project leaves the group.
+
 ## Install
 
 ```

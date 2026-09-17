@@ -4780,7 +4780,9 @@ function TrackerSidebar({
   onNavigate: (route: TrackerRoute) => void;
 }) {
   const groups = projects?.filter(project => project.kind === 'group');
-  const bbProjects = projects?.filter(project => project.kind === 'project');
+  const bbProjects = projects?.filter(
+    project => project.kind === 'project' && project.inheritedFromGroup === null
+  );
   const activeProjectId = route.kind === 'project' || route.kind === 'item' ? route.projectId : null;
   const managedProjectId =
     route.kind === 'project' || route.kind === 'item'
@@ -4971,12 +4973,17 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
 
   const preferredProjectId = useMemo(() => {
     if (!projects || projects.length === 0) return null;
-    if (contextProjectId && projects.some(project => project.id === contextProjectId)) {
-      return contextProjectId;
+    if (contextProjectId) {
+      const contextProject = projects.find(project => project.id === contextProjectId);
+      if (contextProject) return contextProject.boardId;
     }
     const lastProjectId = loadLastProjectId();
-    if (lastProjectId && projects.some(project => project.id === lastProjectId)) return lastProjectId;
-    return projects[0]?.id ?? null;
+    const lastProject = projects.find(project => project.id === lastProjectId);
+    if (lastProject) return lastProject.boardId;
+    const firstBoard = projects.find(
+      project => project.kind === 'group' || project.inheritedFromGroup === null
+    );
+    return firstBoard?.boardId ?? null;
   }, [contextProjectId, projects]);
 
   useEffect(() => {
@@ -4987,7 +4994,9 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
     const restorable =
       (restored.kind === 'item' || restored.kind === 'project') &&
       (projects ?? []).some(project => project.id === restored.projectId) &&
-      (contextProjectId === null || contextProjectId === restored.projectId);
+      (contextProjectId === null ||
+        projects?.find(project => project.id === contextProjectId)?.boardId ===
+          restored.projectId);
     navigate.toPluginPanel(PANEL_PATH, {
       subPath: restorable
         ? routeToSubPath(restored)
@@ -5021,10 +5030,18 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
 
   let outlet: ReactNode;
   if (route.kind === 'manage') {
+    const configurableProjects = projects?.filter(
+      project => project.kind === 'group' || project.inheritedFromGroup === null
+    );
+    const managedProjectId =
+      route.projectId === null
+        ? preferredProjectId
+        : (projects?.find(project => project.id === route.projectId)?.boardId ??
+          route.projectId);
     outlet = (
       <ManageView
-        projectId={route.projectId ?? preferredProjectId}
-        projects={projects}
+        projectId={managedProjectId}
+        projects={configurableProjects}
         isLoadingProjects={projects === undefined}
         onProjectChange={projectId => go({ kind: 'manage', projectId })}
       />

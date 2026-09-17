@@ -11,3 +11,12 @@ export function groupIdFromScope(scopeId: string): string | null {
   const groupId = scopeId.slice(GROUP_SCOPE_PREFIX.length);
   return groupId.startsWith('pgrp_') ? groupId : null;
 }
+
+export function inheritedBoardScopeId(
+  projectId: string,
+  groups: readonly { id: string; projectIds: readonly string[] }[]
+): string {
+  if (groupIdFromScope(projectId) !== null) return projectId;
+  const group = groups.find(candidate => candidate.projectIds.includes(projectId));
+  return group ? groupScopeId(group.id) : projectId;
+}

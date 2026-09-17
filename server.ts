@@ -57,7 +57,11 @@ import {
   type ProductiveTask
 } from './productive/index.js';
 import { productiveSettings } from './composer-action-settings.js';
-import { groupIdFromScope, groupScopeId } from './group-scopes.js';
+import {
+  groupIdFromScope,
+  groupScopeId,
+  inheritedBoardScopeId
+} from './group-scopes.js';
 
 const SYNC_INTERVAL_MS = 5 * 60_000;
 const PRODUCTIVE_APP_ORIGIN = 'https://app.productive.io';
@@ -119,19 +123,39 @@ export default async function plugin(bb: BbPluginApi) {
       sidebarGroups()
     ]);
     return [
-      ...projects.map(project => ({
-        id: project.id,
-        name: project.name,
-        kind: 'project' as const,
-        groupId: null
-      })),
+      ...projects.map(project => {
+        const group = groups.find(candidate =>
+          candidate.projectIds.includes(project.id)
+        );
+        return {
+          id: project.id,
+          boardId: group ? groupScopeId(group.id) : project.id,
+          name: project.name,
+          kind: 'project' as const,
+          groupId: group?.id ?? null,
+          inheritedFromGroup: group?.name ?? null
+        };
+      }),
       ...groups.map(group => ({
         id: groupScopeId(group.id),
+        boardId: groupScopeId(group.id),
         name: group.name,
         kind: 'group' as const,
-        groupId: group.id
+        groupId: group.id,
+        inheritedFromGroup: null
       }))
     ];
+  }
+
+  async function effectiveScopeId(projectId: string): Promise<string> {
+    return inheritedBoardScopeId(projectId, await sidebarGroups());
+  }
+
+  async function configuredScopeIds(): Promise<string[]> {
+    const resolved = await Promise.all(
+      store.configuredProjectIds().map(projectId => effectiveScopeId(projectId))
+    );
+    return [...new Set(resolved)];
   }
 
   // -------------------------------------------------------------------------
@@ -361,6 +385,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   async function scopeView(projectId: string): Promise<ProjectScopeView> {
+    projectId = await effectiveScopeId(projectId);
     const scope = store.projectScope(projectId, SCOPE_DEFAULTS);
     const [token, settings] = await Promise.all([
       readToken(),
@@ -395,6 +420,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function syncProject(projectId: string): Promise<BoardStatus> {
+    projectId = await effectiveScopeId(projectId);
     const scope = store.projectScope(projectId, SCOPE_DEFAULTS);
     if (scope.productiveProjectId === '') {
       return store.syncStatus(projectId);
@@ -444,6 +470,7 @@ export default async function plugin(bb: BbPluginApi) {
     projectId: string,
     locator: string
   ): Promise<WorkItemDetail> {
+    projectId = await effectiveScopeId(projectId);
     const api = await requireApi();
     const orgId = await organizationId();
     const task = await api.getTask(locator);
@@ -478,6 +505,7 @@ export default async function plugin(bb: BbPluginApi) {
     locator: string,
     environment: 'project-default' | 'worktree'
   ): Promise<{ threadId: string; title: string }> {
+    projectId = await effectiveScopeId(projectId);
     const detail = await refreshItem(projectId, locator);
     const { comments: _comments, attachments: _attachments, ...item } = detail;
     const title = threadTitleForItem(item);
@@ -523,6 +551,7 @@ export default async function plugin(bb: BbPluginApi) {
     projectId: string,
     locator: string
   ): Promise<WorkStatusOption[]> {
+    projectId = await effectiveScopeId(projectId);
     const api = await requireApi();
     const scope = store.projectScope(projectId, SCOPE_DEFAULTS);
     const cached = store.get(projectId, locator);
@@ -555,7 +584,7 @@ export default async function plugin(bb: BbPluginApi) {
         candidate.coordinatorThreadIds.includes(threadId)
       );
       if (group) return { projectId: groupScopeId(group.id) };
-      return { projectId: thread.projectId };
+      return { projectId: await effectiveScopeId(thread.projectId) };
     },
     getConnection: async () => ({ connection: await connectionView() }),
     saveConnection: async input => {
@@ -570,7 +599,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
       apiCache = null;
       viewerCache = null;
-      for (const projectId of store.configuredProjectIds()) {
+      for (const projectId of await configuredScopeIds()) {
         advanceRevision(projectId);
       }
       const connection = await connectionView();
@@ -579,9 +608,19 @@ export default async function plugin(bb: BbPluginApi) {
       });
       return { connection };
     },
-    status: async ({ projectId }) => ({ status: store.syncStatus(projectId) }),
+    status: async ({ projectId }) => ({
+      status: store.syncStatus(await effectiveScopeId(projectId))
+    }),
     listItems: async ({ projectId, query, stateCategories, limit }) => ({
-      items: store.list({ projectId, query, stateCategories, limit })
+      items: store.list({
+        projectId:
+          projectId === undefined
+            ? undefined
+            : await effectiveScopeId(projectId),
+        query,
+        stateCategories,
+        limit
+      })
     }),
     refresh: async ({ projectId }) => {
       const status = await syncProject(projectId);
@@ -613,6 +652,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { item: await refreshItem(projectId, locator) };
     },
     archiveItem: async ({ projectId, locator }) => {
+      projectId = await effectiveScopeId(projectId);
       const api = await requireApi();
       await api.archiveTask(locator);
       store.remove(projectId, locator);
@@ -653,7 +693,10 @@ export default async function plugin(bb: BbPluginApi) {
       return { item: await refreshItem(projectId, locator) };
     },
     getCreateTaskContext: async ({ projectId }) => {
-      const project = (await trackerTargets()).find(
+      const targets = await trackerTargets();
+      const requestedProject = targets.find(candidate => candidate.id === projectId);
+      projectId = requestedProject?.boardId ?? (await effectiveScopeId(projectId));
+      const project = targets.find(
         candidate => candidate.id === projectId
       );
       const scope = await scopeView(projectId);
@@ -677,6 +720,7 @@ export default async function plugin(bb: BbPluginApi) {
       };
     },
     getCreateTaskMetadata: async ({ projectId }) => {
+      projectId = await effectiveScopeId(projectId);
       const scope = store.projectScope(projectId, SCOPE_DEFAULTS);
       if (scope.productiveProjectId === '') {
         return {
@@ -749,10 +793,11 @@ export default async function plugin(bb: BbPluginApi) {
       scope: await scopeView(projectId)
     }),
     saveProjectScope: async scope => {
-      store.saveProjectScope(scope);
-      advanceRevision(scope.projectId);
-      void syncProject(scope.projectId);
-      return { scope: await scopeView(scope.projectId) };
+      const projectId = await effectiveScopeId(scope.projectId);
+      store.saveProjectScope({ ...scope, projectId });
+      advanceRevision(projectId);
+      void syncProject(projectId);
+      return { scope: await scopeView(projectId) };
     },
     listProductiveProjects: async ({ query }) => {
       const api = await requireApi();
@@ -787,6 +832,7 @@ export default async function plugin(bb: BbPluginApi) {
       };
     },
     getBoardView: async ({ projectId }) => {
+      projectId = await effectiveScopeId(projectId);
       const stored = store.readBoardView(projectId);
       if (stored === null) return { view: null };
       // A stale row from an older schema must not stop the board opening.
@@ -794,20 +840,26 @@ export default async function plugin(bb: BbPluginApi) {
       return { view: parsed.success ? parsed.data : null };
     },
     saveBoardView: async ({ projectId, view }) => {
+      projectId = await effectiveScopeId(projectId);
       store.writeBoardView(projectId, view);
       return { saved: true as const };
     },
     getProjectBoardSettings: async ({ projectId }) => ({
-      settings: store.boardSettings(projectId)
+      settings: store.boardSettings(await effectiveScopeId(projectId))
     }),
     saveProjectBoardSettings: async settings => {
+      settings = {
+        ...settings,
+        projectId: await effectiveScopeId(settings.projectId)
+      };
       store.saveBoardSettings(settings);
       return { settings };
     },
     listFilterPresets: async ({ projectId }) => ({
-      presets: store.listPresets(projectId)
+      presets: store.listPresets(await effectiveScopeId(projectId))
     }),
     saveFilterPreset: async ({ projectId, id, name, state }) => {
+      projectId = await effectiveScopeId(projectId);
       const saved = store.savePreset({ projectId, id, name, state });
       const preset = filterPresetSummary(saved);
       const presets = store.listPresets(projectId);
@@ -815,11 +867,13 @@ export default async function plugin(bb: BbPluginApi) {
       return { preset, presets };
     },
     deleteFilterPreset: async ({ projectId, id }) => {
+      projectId = await effectiveScopeId(projectId);
       const presets = store.deletePreset(projectId, id);
       bb.realtime.publish(PRESETS_CHANGED, { projectId });
       return { presets };
     },
     reorderFilterPresets: async ({ projectId, ids }) => {
+      projectId = await effectiveScopeId(projectId);
       const presets = store.reorderPresets(projectId, ids);
       bb.realtime.publish(PRESETS_CHANGED, { projectId });
       return { presets };
@@ -920,11 +974,12 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function createTask(input: CreateTaskInput) {
-    const scope = store.projectScope(input.projectId, SCOPE_DEFAULTS);
+    const projectId = await effectiveScopeId(input.projectId);
+    const scope = store.projectScope(projectId, SCOPE_DEFAULTS);
     if (scope.productiveProjectId === '') {
       throw new Error('This bb project is not mapped to a Productive project.');
     }
-    if (input.connectorRevision !== revision(input.projectId)) {
+    if (input.connectorRevision !== revision(projectId)) {
       throw new Error(
         'The Productive connection changed while this form was open. Reopen it and try again.'
       );
@@ -947,9 +1002,9 @@ export default async function plugin(bb: BbPluginApi) {
       workflowStatusId: input.statusId ?? undefined,
       dueDate: input.dueDate ?? undefined
     });
-    const item = toWorkItem(created, input.projectId, orgId);
-    store.upsert(input.projectId, item);
-    bb.realtime.publish(ITEMS_CHANGED, { projectId: input.projectId });
+    const item = toWorkItem(created, projectId, orgId);
+    store.upsert(projectId, item);
+    bb.realtime.publish(ITEMS_CHANGED, { projectId });
 
     // Productive silently drops an assignee the caller may not assign, so the
     // result is reported rather than assumed.
@@ -990,6 +1045,7 @@ export default async function plugin(bb: BbPluginApi) {
     triggers: ['@', '#'],
     async search({ query, projectId }) {
       if (typeof projectId !== 'string') return [];
+      projectId = await effectiveScopeId(projectId);
       const trimmed = query.trim();
       return store
         .list({ projectId, query: trimmed, limit: 10 })
@@ -1195,7 +1251,7 @@ export default async function plugin(bb: BbPluginApi) {
       const args = argv.filter(arg => arg !== '--json' && arg !== '--cached');
       const [command, ...rest] = positionalArgs(argv);
 
-      const projectId =
+      let projectId =
         flagValue(args, '--project') ?? context?.projectId ?? null;
       const reply = (value: unknown, text: string) => ({
         exitCode: 0,
@@ -1208,6 +1264,7 @@ export default async function plugin(bb: BbPluginApi) {
         );
 
       try {
+        if (projectId !== null) projectId = await effectiveScopeId(projectId);
         switch (command) {
           case undefined:
           case 'help':
@@ -1584,7 +1641,7 @@ export default async function plugin(bb: BbPluginApi) {
       while (!signal.aborted) {
         const api = await currentApi();
         if (api !== null) {
-          const projectIds = store.configuredProjectIds();
+          const projectIds = await configuredScopeIds();
           await Promise.all(
             projectIds.map(projectId =>
               syncProject(projectId).catch(error => {
