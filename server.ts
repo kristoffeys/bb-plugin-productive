@@ -122,6 +122,12 @@ export default async function plugin(bb: BbPluginApi) {
       bb.sdk.projects.list({ includePersonal: true }),
       sidebarGroups()
     ]);
+    const effectiveScopeIds = new Set(
+      [
+        ...projects.map(project => inheritedBoardScopeId(project.id, groups)),
+        ...groups.map(group => groupScopeId(group.id))
+      ].filter(scopeId => store.projectScope(scopeId, SCOPE_DEFAULTS).productiveProjectId !== '')
+    );
     return [
       ...projects.map(project => {
         const group = groups.find(candidate =>
@@ -133,7 +139,8 @@ export default async function plugin(bb: BbPluginApi) {
           name: project.name,
           kind: 'project' as const,
           groupId: group?.id ?? null,
-          inheritedFromGroup: group?.name ?? null
+          inheritedFromGroup: group?.name ?? null,
+          mapped: effectiveScopeIds.has(group ? groupScopeId(group.id) : project.id)
         };
       }),
       ...groups.map(group => ({
@@ -142,7 +149,8 @@ export default async function plugin(bb: BbPluginApi) {
         name: group.name,
         kind: 'group' as const,
         groupId: group.id,
-        inheritedFromGroup: null
+        inheritedFromGroup: null,
+        mapped: effectiveScopeIds.has(groupScopeId(group.id))
       }))
     ];
   }

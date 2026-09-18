@@ -107,7 +107,9 @@ export const trackerProjectSchema = z
     name: z.string(),
     kind: z.enum(['project', 'group']),
     groupId: z.string().nullable(),
-    inheritedFromGroup: z.string().nullable()
+    inheritedFromGroup: z.string().nullable(),
+    /** Whether this target's effective board scope has a Productive mapping. */
+    mapped: z.boolean()
   })
   .strict();
 export type TrackerProject = z.infer<typeof trackerProjectSchema>;

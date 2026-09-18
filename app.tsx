@@ -119,6 +119,7 @@ import {
 } from './contract.js';
 import { FILTER_PRESET_NAME_MAX_LENGTH } from './filter-presets.js';
 import { groupIdFromScope } from './group-scopes.js';
+import { configurableTargets, navigationTargets } from './sidebar-targets.js';
 import {
   applyMarkdownFormat,
   type MarkdownFormat
@@ -4234,7 +4235,13 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
-function ProjectMappingForm({ projectId }: { projectId: string }) {
+function ProjectMappingForm({
+  projectId,
+  onSaved
+}: {
+  projectId: string;
+  onSaved: () => void;
+}) {
   const rpc = useRpc<ProductiveRpcContract>();
   const [scope, setScope] = useState<ProjectScopeView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -4324,7 +4331,10 @@ function ProjectMappingForm({ projectId }: { projectId: string }) {
     setSaveError(null);
     void rpc
       .call('saveProjectScope', next)
-      .then(result => setScope(result.scope))
+      .then(result => {
+        setScope(result.scope);
+        onSaved();
+      })
       .catch(nextError => setSaveError(describeError(nextError)))
       .finally(() => setSaving(false));
   };
@@ -4681,12 +4691,14 @@ function ManageView({
   projectId,
   projects,
   isLoadingProjects,
-  onProjectChange
+  onProjectChange,
+  onScopeSaved
 }: {
   projectId: string | null;
   projects: readonly TrackerProject[] | undefined;
   isLoadingProjects: boolean;
   onProjectChange: (projectId: string) => void;
+  onScopeSaved: () => void;
 }) {
   return (
     <div className="h-full overflow-y-auto p-3 @container">
@@ -4729,7 +4741,11 @@ function ManageView({
           </div>
         ) : (
           <>
-            <ProjectMappingForm key={`mapping:${projectId}`} projectId={projectId} />
+            <ProjectMappingForm
+              key={`mapping:${projectId}`}
+              projectId={projectId}
+              onSaved={onScopeSaved}
+            />
             <BoardSettingsForm key={`settings:${projectId}`} projectId={projectId} />
             <FilterPresetsForm key={`presets:${projectId}`} projectId={projectId} />
           </>
@@ -4779,10 +4795,9 @@ function TrackerSidebar({
   isLoading: boolean;
   onNavigate: (route: TrackerRoute) => void;
 }) {
-  const groups = projects?.filter(project => project.kind === 'group');
-  const bbProjects = projects?.filter(
-    project => project.kind === 'project' && project.inheritedFromGroup === null
-  );
+  const targets = projects ? navigationTargets(projects) : undefined;
+  const groups = targets?.filter(project => project.kind === 'group');
+  const bbProjects = targets?.filter(project => project.kind === 'project');
   const activeProjectId = route.kind === 'project' || route.kind === 'item' ? route.projectId : null;
   const managedProjectId =
     route.kind === 'project' || route.kind === 'item'
@@ -4845,7 +4860,7 @@ function TrackerSidebar({
             ))}
           </div>
         ) : (
-          <p className="px-2 py-1 text-xs text-muted-foreground">No BB projects found.</p>
+          <p className="px-2 py-1 text-xs text-muted-foreground">No linked projects yet.</p>
         )}
       </nav>
       <div className="shrink-0 border-t border-border-hairline px-2 py-1.5">
@@ -4973,34 +4988,37 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
 
   const preferredProjectId = useMemo(() => {
     if (!projects || projects.length === 0) return null;
+    const targets = navigationTargets(projects);
+    if (targets.length === 0) return null;
     if (contextProjectId) {
-      const contextProject = projects.find(project => project.id === contextProjectId);
+      const contextProject = targets.find(project => project.id === contextProjectId);
       if (contextProject) return contextProject.boardId;
     }
     const lastProjectId = loadLastProjectId();
-    const lastProject = projects.find(project => project.id === lastProjectId);
+    const lastProject = targets.find(project => project.id === lastProjectId);
     if (lastProject) return lastProject.boardId;
-    const firstBoard = projects.find(
-      project => project.kind === 'group' || project.inheritedFromGroup === null
-    );
+    const firstBoard = targets[0];
     return firstBoard?.boardId ?? null;
   }, [contextProjectId, projects]);
 
   useEffect(() => {
-    if (route.kind !== 'root' || preferredProjectId === null) return;
+    if (route.kind !== 'root' || projects === undefined) return;
     // Restore where the user left off, but only if that project still exists
     // and the app has not put us in a different project's context.
     const restored = parseTrackerRoute(loadLastRoute() ?? '');
     const restorable =
       (restored.kind === 'item' || restored.kind === 'project') &&
-      (projects ?? []).some(project => project.id === restored.projectId) &&
+      navigationTargets(projects ?? []).some(project => project.id === restored.projectId) &&
       (contextProjectId === null ||
-        projects?.find(project => project.id === contextProjectId)?.boardId ===
+        navigationTargets(projects ?? []).find(project => project.id === contextProjectId)?.boardId ===
           restored.projectId);
     navigate.toPluginPanel(PANEL_PATH, {
-      subPath: restorable
-        ? routeToSubPath(restored)
-        : routeToSubPath({ kind: 'project', projectId: preferredProjectId }),
+      subPath:
+        preferredProjectId === null
+          ? 'manage'
+          : restorable
+            ? routeToSubPath(restored)
+            : routeToSubPath({ kind: 'project', projectId: preferredProjectId }),
       replace: true
     });
   }, [contextProjectId, navigate, preferredProjectId, projects, route.kind]);
@@ -5030,12 +5048,10 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
 
   let outlet: ReactNode;
   if (route.kind === 'manage') {
-    const configurableProjects = projects?.filter(
-      project => project.kind === 'group' || project.inheritedFromGroup === null
-    );
+    const configurableProjects = projects ? configurableTargets(projects) : undefined;
     const managedProjectId =
       route.projectId === null
-        ? preferredProjectId
+        ? configurableProjects?.[0]?.id ?? null
         : (projects?.find(project => project.id === route.projectId)?.boardId ??
           route.projectId);
     outlet = (
@@ -5044,6 +5060,7 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
         projects={configurableProjects}
         isLoadingProjects={projects === undefined}
         onProjectChange={projectId => go({ kind: 'manage', projectId })}
+        onScopeSaved={() => void loadProjects()}
       />
     );
   } else if (route.kind === 'item') {
@@ -5064,7 +5081,7 @@ function ProductivePanel({ subPath }: PluginNavPanelProps) {
       ) : (
         <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
           <Icon name="Folder" className="size-5 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">No BB projects found.</p>
+          <p className="text-sm text-muted-foreground">No linked projects yet. Open Manage to link a BB project.</p>
         </div>
       );
   }
